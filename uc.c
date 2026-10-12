@@ -3180,3 +3180,11 @@ uc_err uc_x70_request_restart(uc_engine *uc)
     uc->x70_restart_request = true;
     return UC_ERR_OK;
 }
+
+// x70: feature bits of these exports. 1: with a translation filter installed,
+// bit 31 of a block hook's size reports Thumb state.
+UNICORN_EXPORT
+uint32_t uc_x70_features(void)
+{
+    return 1;
+}

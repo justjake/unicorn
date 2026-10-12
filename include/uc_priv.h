@@ -454,6 +454,7 @@ struct uc_struct {
     GHashTable *x70_io_pcs;  // guest PCs of instructions ending their block
     uint32_t x70_retry_limit; // block hook: retranslate this block this short
     bool x70_restart_request; // write hook: restart the storing instruction
+    bool x70_tb_thumb;        // Thumb state of the block being translated
 };
 
 // Metadata stub for the variable-size cpu context used with uc_context_*()

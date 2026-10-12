@@ -186,5 +186,10 @@ _end_loop:
         }
 
         tcg_op->args[1] = db->tb->size;
+        // x70: with a translation filter installed, bit 31 of the block
+        // hook's size reports Thumb state, so the hook need not read CPSR.
+        if (uc->x70_insn_filter && uc->x70_tb_thumb) {
+            tcg_op->args[1] |= 0x80000000u;
+        }
     }
 }
