@@ -10944,7 +10944,9 @@ static void disas_arm_insn(DisasContext *s, unsigned int insn)
     }
 
     // Unicorn: trace this instruction on request
-    if (HOOK_EXISTS_BOUNDED(s->uc, UC_HOOK_CODE, s->pc_curr)) {
+    // x70: unless the translation filter declined it (arm_tr_translate_insn)
+    if (s->uc->x70_insn_decision != 0 &&
+        HOOK_EXISTS_BOUNDED(s->uc, UC_HOOK_CODE, s->pc_curr)) {
 
         // Sync PC in advance
         gen_set_pc_im(s, s->pc_curr);
@@ -11483,6 +11485,8 @@ static void arm_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         }
 
         dc->base.pc_next += 4;
+        dc->uc->x70_insn_decision = dc->uc->x70_insn_filter
+            ? dc->uc->x70_insn_filter(dc->uc->x70_filter_user, dc->pc_curr, insn) : 1;
         disas_arm_insn(dc, insn);
 
         arm_post_translate_insn(dc);

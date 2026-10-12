@@ -92,6 +92,17 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
     tcg_debug_assert(db->is_jmp == DISAS_NEXT);  /* no early exit */
 
     while (true) {
+        target_ulong x70_pc = db->pc_next;
+
+        // x70: an instruction that touched a hooked device page starts its
+        // own block (it is also the last of it, below)
+        if (db->num_insns > 0 && uc->x70_io_pcs &&
+            g_hash_table_lookup(uc->x70_io_pcs, (gconstpointer)(uintptr_t)x70_pc)) {
+            db->is_jmp = DISAS_TOO_MANY;
+            break;
+        }
+        uc->x70_insn_decision = 1;
+
         db->num_insns++;
 
         ops->insn_start(db, cpu);
@@ -127,6 +138,14 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
 
         /* Stop translation if translate_insn so indicated.  */
         if (db->is_jmp != DISAS_NEXT) {
+            break;
+        }
+
+        // x70: a hooked special instruction or a device access ends its block
+        if (uc->x70_insn_filter && (uc->x70_insn_decision == 2 ||
+            (uc->x70_io_pcs &&
+             g_hash_table_lookup(uc->x70_io_pcs, (gconstpointer)(uintptr_t)x70_pc)))) {
+            db->is_jmp = DISAS_TOO_MANY;
             break;
         }
 

@@ -168,6 +168,20 @@ void HELPER(exit_atomic)(CPUArchState *env)
 void HELPER(check_exit_request)(void *p, uint32_t in_delay_slot) {
     uc_engine *uc = p;
 
+    // x70: the block hook asked for this block with fewer instructions. A
+    // pending exit wins; the block is then reconsidered when execution resumes.
+    if (unlikely(uc->x70_retry_limit)) {
+        uint32_t limit = uc->x70_retry_limit;
+        uc->x70_retry_limit = 0;
+        if (!cpu_loop_exit_requested(uc->cpu) && !in_delay_slot) {
+            uc->cpu->cflags_next_tb = curr_cflags() | (limit & CF_COUNT_MASK);
+            if (uc->nested_level == 1) {
+                tb_exec_unlock(uc);
+            }
+            cpu_loop_exit_restore(uc->cpu, GETPC());
+        }
+    }
+
     if (cpu_loop_exit_requested(uc->cpu) && !in_delay_slot) {
         // There are stil something we have to before exiting to be compatible with previous behaviors
 

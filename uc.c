@@ -508,6 +508,9 @@ uc_err uc_close(uc_engine *uc)
     uc->tb_flush(uc);
 
     g_free(uc->x70_watch);
+    if (uc->x70_io_pcs) {
+        g_hash_table_destroy(uc->x70_io_pcs);
+    }
 
     // Cleanup internally.
     if (uc->release) {
@@ -3137,5 +3140,43 @@ uc_err uc_x70_watch(uc_engine *uc, uint64_t address, uint64_t size)
     if (changed)
         uc->tcg_flush_tlb(uc);
     restore_jit_state(uc);
+    return UC_ERR_OK;
+}
+
+// x70: install (or with filter NULL remove) the ARM translation filter and
+// the restart callback (see uc_priv.h). Translations made under the previous
+// setting are flushed.
+UNICORN_EXPORT
+uc_err uc_x70_set_insn_filter(uc_engine *uc,
+                              int (*filter)(void *user, uint64_t pc, uint32_t insn),
+                              void (*restart)(void *user, uint64_t pc), void *user)
+{
+    UC_INIT(uc);
+    if (uc->x70_insn_filter != filter || uc->x70_restart != restart ||
+        uc->x70_filter_user != user) {
+        uc->x70_insn_filter = filter;
+        uc->x70_restart = restart;
+        uc->x70_filter_user = user;
+        uc->tb_flush(uc);
+    }
+    restore_jit_state(uc);
+    return UC_ERR_OK;
+}
+
+// x70: from a block hook, have the block just hooked retranslated with only
+// `limit` (1..32767) instructions before it executes; 0 cancels.
+UNICORN_EXPORT
+uc_err uc_x70_retry_block(uc_engine *uc, uint32_t limit)
+{
+    uc->x70_retry_limit = limit;
+    return UC_ERR_OK;
+}
+
+// x70: from a memory write hook, redo the storing instruction as a block of
+// its own once the hooks return (with a filter installed).
+UNICORN_EXPORT
+uc_err uc_x70_request_restart(uc_engine *uc)
+{
+    uc->x70_restart_request = true;
     return UC_ERR_OK;
 }

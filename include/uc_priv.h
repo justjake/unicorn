@@ -440,6 +440,20 @@ struct uc_struct {
     // x70: one bit per 1 KiB physical page whose stores reach x70_watched
     // write hooks from the TLB fast path's slow path
     uint8_t *x70_watch;
+    // x70: translation filter (ARM state). Returns 0 for no code hook, 1 for
+    // the hook, 2 for the hook and the end of the translated block after the
+    // instruction. While installed, an instruction touching a page an
+    // unwatched memory hook covers is restarted once as the last instruction
+    // of a block, and its address ends later blocks (x70_io_pcs).
+    int (*x70_insn_filter)(void *user, uint64_t pc, uint32_t insn);
+    // x70: called with the guest PC of an instruction about to be restarted;
+    // the instructions before it in its block have executed, it has not.
+    void (*x70_restart)(void *user, uint64_t pc);
+    void *x70_filter_user;
+    int x70_insn_decision;   // filter result for the instruction being translated
+    GHashTable *x70_io_pcs;  // guest PCs of instructions ending their block
+    uint32_t x70_retry_limit; // block hook: retranslate this block this short
+    bool x70_restart_request; // write hook: restart the storing instruction
 };
 
 // Metadata stub for the variable-size cpu context used with uc_context_*()

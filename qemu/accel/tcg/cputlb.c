@@ -800,6 +800,19 @@ static void tlb_add_large_page(CPUArchState *env, int mmu_idx,
     env_tlb(env)->d[mmu_idx].large_page_mask = lp_mask;
 }
 
+/* x70: does a live hook of the list that is not a watched store hook cover
+   paddr? Such an access must be the last instruction of its block while a
+   translation filter is installed (x70_restart_insn). */
+static bool x70_device_access(struct list_item *cur, hwaddr paddr)
+{
+    for (; cur != NULL; cur = cur->next) {
+        struct hook *hook = (struct hook *)cur->data;
+        if (!hook->x70_watched && HOOK_BOUND_CHECK(hook, paddr))
+            return true;
+    }
+    return false;
+}
+
 /* x70: is any 1 KiB page of [first, last] watched? */
 static bool x70_watched(struct uc_struct *uc, hwaddr first, hwaddr last)
 {
@@ -1702,6 +1715,11 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
     // now it is read on mapped memory
     // patch issue #1041 multiple UC_HOOK_MEM callbacks for unaligned access
     if (!code_read && !uc->size_recur_mem) {
+        if (uc->x70_insn_filter &&
+            (x70_device_access(uc->hook[UC_HOOK_MEM_READ_IDX].head, paddr) ||
+             x70_device_access(uc->hook[UC_HOOK_MEM_READ_AFTER_IDX].head, paddr))) {
+            x70_restart_insn(uc->cpu, retaddr, true);
+        }
         // this is date reading
         HOOK_FOREACH(uc, hook, UC_HOOK_MEM_READ) {
             if (hook->to_delete)
@@ -2246,13 +2264,19 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
     mr = uc->memory_mapping(uc, paddr);
 
     if (!uc->size_recur_mem) { // disabling write callback if in recursive call
+        if (uc->x70_insn_filter &&
+            x70_device_access(uc->hook[UC_HOOK_MEM_WRITE_IDX].head, paddr)) {
+            x70_restart_insn(uc->cpu, retaddr, true);
+        }
         // Unicorn: callback on memory write
         HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE) {
             if (hook->to_delete)
                 continue;
             if (!HOOK_BOUND_CHECK(hook, paddr))
                 continue;
-            if (!synced && !uc->skip_sync_pc_on_exit && !uc->x70_write_hook_no_pc_sync && retaddr) {
+            // x70: watched store hooks may skip the PC restore
+            if (!synced && !uc->skip_sync_pc_on_exit &&
+                !(uc->x70_write_hook_no_pc_sync && hook->x70_watched) && retaddr) {
                 cpu_restore_state(uc->cpu, retaddr, false);
                 synced = true;
             }
@@ -2260,6 +2284,12 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
             // the last callback may already asked to stop emulation
             if (uc->stop_request)
                 break;
+        }
+        // x70: a hook found this store overwrote translated code; the store
+        // is redone in a block of its own so execution can stop right after
+        if (uc->x70_restart_request) {
+            uc->x70_restart_request = false;
+            x70_restart_insn(uc->cpu, retaddr, false);
         }
     }
 

@@ -2084,6 +2084,69 @@ void tb_check_watchpoint(CPUState *cpu, uintptr_t retaddr)
  *
  * Called by softmmu_template.h, with iothread mutex not held.
  */
+/* x70: index within its block of the instruction containing host address
+   retaddr (a helper's return address), or -1. */
+static int x70_insn_index(TranslationBlock *tb, uintptr_t retaddr)
+{
+    target_ulong data[TARGET_INSN_START_WORDS] = { tb->pc };
+    uintptr_t host_pc = (uintptr_t)tb->tc.ptr;
+    uint8_t *p = (uint8_t *)tb->tc.ptr + tb->tc.size;
+    int i, j;
+
+    retaddr -= GETPC_ADJ;
+    if (retaddr < host_pc) {
+        return -1;
+    }
+    for (i = 0; i < tb->icount; ++i) {
+        for (j = 0; j < TARGET_INSN_START_WORDS; ++j) {
+            data[j] += decode_sleb128(&p);
+        }
+        host_pc += decode_sleb128(&p);
+        if (host_pc > retaddr) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* x70: unless it already is the last instruction of its block, restart the
+   instruction executing at retaddr as a block of its own. remember: also end
+   later translations at it and retranslate the block it was found in. The
+   embedder's x70_restart callback learns its PC first. */
+void x70_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember)
+{
+    struct uc_struct *uc = cpu->uc;
+    TCGContext *tcg_ctx = uc->tcg_ctx;
+    TranslationBlock *tb;
+    int index;
+    uint64_t pc;
+
+    if (!retaddr || !(tb = tcg_tb_lookup(tcg_ctx, retaddr))) {
+        return;
+    }
+    index = x70_insn_index(tb, retaddr);
+    if (index < 0 || index == tb->icount - 1) {
+        return;
+    }
+    cpu_restore_state_from_tb(cpu, tb, retaddr, true);
+    pc = (uc->get_pc ? uc->get_pc(uc) : 0) & ~(uint64_t)1;
+    if (remember) {
+        if (!uc->x70_io_pcs) {
+            uc->x70_io_pcs = g_hash_table_new(NULL, NULL);
+        }
+        g_hash_table_insert(uc->x70_io_pcs, (gpointer)(uintptr_t)pc, (gpointer)1);
+        tb_phys_invalidate(tcg_ctx, tb, -1);
+    }
+    if (uc->x70_restart) {
+        uc->x70_restart(uc->x70_filter_user, pc);
+    }
+    cpu->cflags_next_tb = curr_cflags() | CF_LAST_IO | 1;
+    if (uc->nested_level == 1) {
+        tb_exec_unlock(uc);
+    }
+    cpu_loop_exit_noexc(cpu);
+}
+
 void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
 {
     TCGContext *tcg_ctx = cpu->uc->tcg_ctx;
