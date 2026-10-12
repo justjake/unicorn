@@ -800,6 +800,48 @@ static void tlb_add_large_page(CPUArchState *env, int mmu_idx,
     env_tlb(env)->d[mmu_idx].large_page_mask = lp_mask;
 }
 
+/* x70: is any 1 KiB page of [first, last] watched? */
+static bool x70_watched(struct uc_struct *uc, hwaddr first, hwaddr last)
+{
+    hwaddr page;
+    if (uc->x70_watch == NULL)
+        return false;
+    for (page = first >> 10; page <= last >> 10; page++) {
+        if (uc->x70_watch[page >> 3] & (1 << (page & 7)))
+            return true;
+    }
+    return false;
+}
+
+/* x70: does any live hook in the list cover part of [first, last]? A
+   watched hook covers only the watched pages of its range. */
+static bool x70_hook_overlaps(struct uc_struct *uc, struct list_item *cur,
+                              hwaddr first, hwaddr last)
+{
+    for (; cur != NULL; cur = cur->next) {
+        struct hook *hook = (struct hook *)cur->data;
+        if (!hook->to_delete &&
+            (hook->begin > hook->end || (hook->begin <= last && hook->end >= first)) &&
+            (!hook->x70_watched || x70_watched(uc, first, last)))
+            return true;
+    }
+    return false;
+}
+
+/* x70: watchpoint flags that route a page's data accesses to the slow path,
+   where memory hooks run, when a hook range covers the page. */
+static int x70_page_hook_flags(struct uc_struct *uc, hwaddr page)
+{
+    hwaddr last = page + TARGET_PAGE_SIZE - 1;
+    int flags = 0;
+    if (x70_hook_overlaps(uc, uc->hook[UC_HOOK_MEM_READ_IDX].head, page, last) ||
+        x70_hook_overlaps(uc, uc->hook[UC_HOOK_MEM_READ_AFTER_IDX].head, page, last))
+        flags |= BP_MEM_READ;
+    if (x70_hook_overlaps(uc, uc->hook[UC_HOOK_MEM_WRITE_IDX].head, page, last))
+        flags |= BP_MEM_WRITE;
+    return flags;
+}
+
 /* Add a new TLB entry. At most one entry for a given virtual address
  * is permitted. Only a single TARGET_PAGE_SIZE region is mapped, the
  * supplied size is only used by tlb_flush_page.
@@ -875,7 +917,13 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
             if (section->readonly) {
                 write_address |= TLB_DISCARD_WRITE;
             } else if (cpu_physical_memory_is_clean(iotlb)) {
-                write_address |= TLB_NOTDIRTY;
+                /* x70: only watched pages can hold translated code (the
+                   embedder watches every page it sees translated, in every
+                   engine and alias); others keep the store fast path. */
+                if (!cpu->uc->x70_page_hooks || cpu->uc->snapshot_level != 0 ||
+                    x70_watched(cpu->uc, paddr_page, paddr_page + TARGET_PAGE_SIZE - 1)) {
+                    write_address |= TLB_NOTDIRTY;
+                }
             }
         }
     } else {
@@ -894,6 +942,9 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
 
     wp_flags = cpu_watchpoint_address_matches(cpu, vaddr_page,
                                               TARGET_PAGE_SIZE);
+    if (cpu->uc->x70_page_hooks) {
+        wp_flags |= x70_page_hook_flags(cpu->uc, paddr_page);
+    }
 
     index = tlb_index(env, mmu_idx, vaddr_page);
     te = tlb_entry(env, mmu_idx, vaddr_page);
@@ -2201,7 +2252,7 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
                 continue;
             if (!HOOK_BOUND_CHECK(hook, paddr))
                 continue;
-            if (!synced && !uc->skip_sync_pc_on_exit && retaddr) {
+            if (!synced && !uc->skip_sync_pc_on_exit && !uc->x70_write_hook_no_pc_sync && retaddr) {
                 cpu_restore_state(uc->cpu, retaddr, false);
                 synced = true;
             }

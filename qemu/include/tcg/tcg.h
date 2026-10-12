@@ -1590,6 +1590,9 @@ void uc_add_inline_hook(uc_engine *uc, struct hook *hk, void** args, int args_le
 
 static inline bool tcg_uc_has_hookmem(TCGContext *s)
 {
+    // x70: hooked pages carry TLB_WATCHPOINT instead (tlb_set_page_with_attrs)
+    if (s->uc->x70_page_hooks)
+        return false;
     return HOOK_EXISTS(s->uc, UC_HOOK_MEM_READ) ||
         HOOK_EXISTS(s->uc, UC_HOOK_MEM_READ_AFTER) ||
         HOOK_EXISTS(s->uc, UC_HOOK_MEM_WRITE);

@@ -170,6 +170,7 @@ struct hook {
     void *callback;      // a uc_cb_* type
     void *user_data;
     GHashTable *hooked_regions; // The regions this hook instrumented on
+    bool x70_watched; // x70: write hook slows only watched pages (x70_watch)
 };
 
 // Add an inline hook to helper_table
@@ -432,6 +433,13 @@ struct uc_struct {
     bool thread_executable_entry;
     bool current_executable;
     bool skip_sync_pc_on_exit;
+    // x70: do not restore the guest PC before UC_HOOK_MEM_WRITE callbacks
+    bool x70_write_hook_no_pc_sync;
+    // x70: memory hooks take the slow path only on pages a hook range covers
+    bool x70_page_hooks;
+    // x70: one bit per 1 KiB physical page whose stores reach x70_watched
+    // write hooks from the TLB fast path's slow path
+    uint8_t *x70_watch;
 };
 
 // Metadata stub for the variable-size cpu context used with uc_context_*()

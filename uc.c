@@ -507,6 +507,8 @@ uc_err uc_close(uc_engine *uc)
     // Flush all translation buffers or we leak memory allocated by MMU
     uc->tb_flush(uc);
 
+    g_free(uc->x70_watch);
+
     // Cleanup internally.
     if (uc->release) {
         uc->release(uc->tcg_ctx);
@@ -2028,6 +2030,12 @@ uc_err uc_hook_add(uc_engine *uc, uc_hook *hh, int type, void *callback,
         free(hook);
     }
 
+    // x70: existing TLB entries do not carry the new hook's page flags
+    if (uc->x70_page_hooks && uc->init_done &&
+        (type & (UC_HOOK_MEM_READ | UC_HOOK_MEM_READ_AFTER | UC_HOOK_MEM_WRITE))) {
+        uc->tcg_flush_tlb(uc);
+    }
+
     restore_jit_state(uc);
     return ret;
 }
@@ -3068,3 +3076,66 @@ void trace_end(uc_tracer *tracer, trace_loc loc, const char *fmt, ...)
             (double)(end - tracer->starts[loc]) / (double)(1000));
 }
 #endif
+
+// x70: skip the guest-PC restore before memory-write hooks. Callers whose
+// write hooks never read the PC avoid a TB lookup per hooked store.
+UNICORN_EXPORT
+uc_err uc_x70_set_write_hook_pc_sync(uc_engine *uc, bool sync)
+{
+    uc->x70_write_hook_no_pc_sync = !sync;
+    return UC_ERR_OK;
+}
+
+// x70: route data accesses to the slow path only on pages a memory-hook range
+// covers (TLB_WATCHPOINT), instead of every access once any memory hook exists.
+UNICORN_EXPORT
+uc_err uc_x70_set_page_hooks(uc_engine *uc, bool enabled)
+{
+    UC_INIT(uc);
+    uc->x70_page_hooks = enabled;
+    uc->tb_flush(uc);
+    uc->tcg_flush_tlb(uc);
+    restore_jit_state(uc);
+    return UC_ERR_OK;
+}
+
+// x70: a watched write hook (x70_page_hooks mode) slows down and sees fast-path
+// stores only on watched pages; slow-path stores elsewhere still reach it.
+UNICORN_EXPORT
+uc_err uc_x70_set_hook_watched(uc_engine *uc, uc_hook hh, bool watched)
+{
+    struct hook *hook = (struct hook *)hh;
+    UC_INIT(uc);
+    if (hook->x70_watched != watched) {
+        hook->x70_watched = watched;
+        uc->tcg_flush_tlb(uc);
+    }
+    restore_jit_state(uc);
+    return UC_ERR_OK;
+}
+
+// x70: watch the 1 KiB physical pages covering [address, address + size).
+UNICORN_EXPORT
+uc_err uc_x70_watch(uc_engine *uc, uint64_t address, uint64_t size)
+{
+    uint64_t page;
+    bool changed = false;
+    UC_INIT(uc);
+    if (size == 0 || address + size - 1 > 0xffffffffULL) {
+        restore_jit_state(uc);
+        return UC_ERR_ARG;
+    }
+    if (uc->x70_watch == NULL) {
+        uc->x70_watch = g_malloc0(1 << 19);
+    }
+    for (page = address >> 10; page <= (address + size - 1) >> 10; page++) {
+        if (!(uc->x70_watch[page >> 3] & (1 << (page & 7)))) {
+            uc->x70_watch[page >> 3] |= 1 << (page & 7);
+            changed = true;
+        }
+    }
+    if (changed)
+        uc->tcg_flush_tlb(uc);
+    restore_jit_state(uc);
+    return UC_ERR_OK;
+}
