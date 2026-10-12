@@ -10945,7 +10945,7 @@ static void disas_arm_insn(DisasContext *s, unsigned int insn)
 
     // Unicorn: trace this instruction on request
     // x70: unless the translation filter declined it (arm_tr_translate_insn)
-    if (s->uc->x70_insn_decision != 0 &&
+    if ((s->uc->x70_insn_decision & 3) != 0 &&
         HOOK_EXISTS_BOUNDED(s->uc, UC_HOOK_CODE, s->pc_curr)) {
 
         // Sync PC in advance

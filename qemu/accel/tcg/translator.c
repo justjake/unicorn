@@ -82,6 +82,8 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
 
     // tcg_dump_ops(tcg_ctx, false, "translator loop");
 
+    uc->x70_tb_slow = false;
+
     /* Start translating.  */
     gen_tb_start(tcg_ctx, db->tb);
     // tcg_dump_ops(tcg_ctx, false, "tb start");
@@ -141,8 +143,12 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
             break;
         }
 
+        // x70: the filter may ask for the block hook on every entry (4)
+        if (uc->x70_insn_decision & 4) {
+            uc->x70_tb_slow = true;
+        }
         // x70: a hooked special instruction or a device access ends its block
-        if (uc->x70_insn_filter && (uc->x70_insn_decision == 2 ||
+        if (uc->x70_insn_filter && ((uc->x70_insn_decision & 3) == 2 ||
             (uc->x70_io_pcs &&
              g_hash_table_lookup(uc->x70_io_pcs, (gconstpointer)(uintptr_t)x70_pc)))) {
             db->is_jmp = DISAS_TOO_MANY;
@@ -190,6 +196,11 @@ _end_loop:
         // hook's size reports Thumb state, so the hook need not read CPSR.
         if (uc->x70_insn_filter && uc->x70_tb_thumb) {
             tcg_op->args[1] |= 0x80000000u;
+        }
+        // x70: bit 30 marks a block budgeted accounting may enter without
+        // hooks (ARM, every instruction filtered, no hook requested).
+        if (uc->x70_insn_filter && !uc->x70_tb_thumb && !uc->x70_tb_slow) {
+            tcg_op->args[1] |= 0x40000000u;
         }
     }
 }

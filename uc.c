@@ -2138,6 +2138,17 @@ void helper_uc_tracecode(int32_t size, uc_hook_idx index, void *handle,
         revert_uc_emu_stop(uc);
     }
 
+    // x70: budgeted block accounting (see uc_priv.h x70_acct)
+    if (index == UC_HOOK_BLOCK_IDX && (size & 0x40000000) && uc->x70_acct.enabled) {
+        int64_t count = (size & 0x3fffffff) >> 2;
+        if (uc->x70_acct.budget >= count) {
+            uc->x70_acct.budget -= count;
+            uc->x70_acct.ring[uc->x70_acct.head++ & uc->x70_acct.mask] =
+                ((uint64_t)(uint32_t)address << 32) | (uint64_t)count;
+            return;
+        }
+    }
+
     for (cur = uc->hook[index].head;
          cur != NULL && (hook = (struct hook *)cur->data); cur = cur->next) {
         if (hook->to_delete) {
@@ -3182,9 +3193,20 @@ uc_err uc_x70_request_restart(uc_engine *uc)
 }
 
 // x70: feature bits of these exports. 1: with a translation filter installed,
-// bit 31 of a block hook's size reports Thumb state.
+// bit 31 of a block hook's size reports Thumb state. 2: uc_x70_accounting and
+// filter decision bit 4 (block hook on every entry); bit 30 marks fast blocks.
 UNICORN_EXPORT
 uint32_t uc_x70_features(void)
 {
-    return 1;
+    return 1 | 2;
+}
+
+// x70: the budgeted block accounting record (uc_priv.h): the embedder reads
+// and writes budget and head directly; ring/mask/enabled are its to set while
+// no emulation runs. Layout: int64 budget, u64 head, u64 *ring, u64 mask,
+// u64 enabled.
+UNICORN_EXPORT
+void *uc_x70_accounting(uc_engine *uc)
+{
+    return &uc->x70_acct;
 }

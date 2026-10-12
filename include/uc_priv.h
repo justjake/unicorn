@@ -455,6 +455,18 @@ struct uc_struct {
     uint32_t x70_retry_limit; // block hook: retranslate this block this short
     bool x70_restart_request; // write hook: restart the storing instruction
     bool x70_tb_thumb;        // Thumb state of the block being translated
+    bool x70_tb_slow;         // the filter asked for the block hook on every entry
+    // x70: budgeted block accounting (uc_x70_accounting). A block translated
+    // as "fast" (block hook size bit 30) whose instruction count fits in
+    // `budget` is entered without calling hooks: the count is subtracted and
+    // (start << 32 | count) is pushed to `ring[head++ & mask]`.
+    struct {
+        int64_t budget;
+        uint64_t head;
+        uint64_t *ring;
+        uint64_t mask;
+        uint64_t enabled;
+    } x70_acct;
 };
 
 // Metadata stub for the variable-size cpu context used with uc_context_*()
