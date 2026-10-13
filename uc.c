@@ -3154,6 +3154,33 @@ uc_err uc_x70_watch(uc_engine *uc, uint64_t address, uint64_t size)
     return UC_ERR_OK;
 }
 
+// x70: retire physical page watches after the embedder releases its last
+// dependency. The embedder retains watches needed by code or reservations.
+UNICORN_EXPORT
+uc_err uc_x70_unwatch(uc_engine *uc, uint64_t address, uint64_t size)
+{
+    uint64_t page;
+    bool changed = false;
+    UC_INIT(uc);
+    if (size == 0 || address > 0xffffffffULL ||
+        size - 1 > 0xffffffffULL - address) {
+        restore_jit_state(uc);
+        return UC_ERR_ARG;
+    }
+    if (uc->x70_watch != NULL) {
+        for (page = address >> 10; page <= (address + size - 1) >> 10; page++) {
+            if (uc->x70_watch[page >> 3] & (1 << (page & 7))) {
+                uc->x70_watch[page >> 3] &= ~(1 << (page & 7));
+                changed = true;
+            }
+        }
+    }
+    if (changed)
+        uc->tcg_flush_tlb(uc);
+    restore_jit_state(uc);
+    return UC_ERR_OK;
+}
+
 // x70: install (or with filter NULL remove) the ARM translation filter and
 // the restart callback (see uc_priv.h). Translations made under the previous
 // setting are flushed.
