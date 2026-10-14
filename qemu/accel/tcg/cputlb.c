@@ -1194,6 +1194,40 @@ static bool victim_tlb_hit(CPUArchState *env, size_t mmu_idx, size_t index,
   victim_tlb_hit(env, mmu_idx, index, offsetof(CPUTLBEntry, TY), \
                  (ADDR) & TARGET_PAGE_MASK)
 
+/* x70: memory hooks may flush the TLB (uc_x70_watch from the embedder's
+   hooks, uc_hook_add, mapping changes), and a flush may resize it, which
+   frees the table `entry` points into. After hooks run, look the entry up
+   again from env and refill it if the flush emptied it, so the access never
+   uses a stale or freed entry's addend. `tlb_addr` is the entry's word at
+   `tlb_off` without TLB_INVALID_MASK, as the helpers keep it. Unchanged
+   entries are returned as they are. */
+static CPUTLBEntry *x70_tlb_reload(CPUArchState *env, uintptr_t mmu_idx,
+                                   target_ulong addr, int size,
+                                   MMUAccessType access_type,
+                                   uintptr_t retaddr, size_t tlb_off,
+                                   CPUTLBEntry *entry, uintptr_t *index,
+                                   target_ulong *tlb_addr)
+{
+    struct uc_struct *uc = env->uc;
+    CPUTLBEntry *current = tlb_entry(env, mmu_idx, addr);
+
+    /* `entry` itself may be freed: compare the pointer, read `current`. */
+    if (current == entry &&
+        (tlb_read_ofs(current, tlb_off) & ~TLB_INVALID_MASK) == *tlb_addr) {
+        return entry;
+    }
+    *index = tlb_index(env, mmu_idx, addr);
+    if (!tlb_hit(uc, tlb_read_ofs(current, tlb_off), addr) &&
+        !victim_tlb_hit(env, mmu_idx, *index, tlb_off,
+                        addr & TARGET_PAGE_MASK)) {
+        tlb_fill(env_cpu(env), addr, size, access_type, mmu_idx, retaddr);
+        *index = tlb_index(env, mmu_idx, addr);
+        current = tlb_entry(env, mmu_idx, addr);
+    }
+    *tlb_addr = tlb_read_ofs(current, tlb_off) & ~TLB_INVALID_MASK;
+    return current;
+}
+
 /*
  * Return a ram_addr_t for the virtual address for execution.
  *
@@ -1673,18 +1707,9 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
 
         if (handled) {
             uc->invalid_error = UC_ERR_OK;
-            /* If the TLB entry is for a different page, reload and try again.  */
-            if (!tlb_hit(env->uc, tlb_addr, addr)) {
-                if (!victim_tlb_hit(env, mmu_idx, index, tlb_off,
-                                    addr & TARGET_PAGE_MASK)) {
-                    tlb_fill(env_cpu(env), addr, size,
-                             access_type, mmu_idx, retaddr);
-                    index = tlb_index(env, mmu_idx, addr);
-                    entry = tlb_entry(env, mmu_idx, addr);
-                }
-                tlb_addr = code_read ? entry->addr_code : entry->addr_read;
-                tlb_addr &= ~TLB_INVALID_MASK;
-            }
+            /* x70: the hook may have flushed (and resized) the TLB */
+            entry = x70_tlb_reload(env, mmu_idx, addr, size, access_type, retaddr,
+                                   tlb_off, entry, &index, &tlb_addr);
             paddr = entry->paddr | (addr & ~TARGET_PAGE_MASK);
             mr = uc->memory_mapping(uc, paddr);
             if (mr == NULL) {
@@ -1737,18 +1762,10 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
         }
 
         /* Unicorn: Previous callbacks may invalidate TLB, reload everything.
-                    This may have impact on performance but generally fine.
-                    A better approach is not always invalidating tlb but this
-                    might cause more chaos regarding re-entry (nested uc_emu_start).
-        */
-        if (tlb_entry_is_empty(entry)) {
-            tlb_fill(env_cpu(env), addr, size,
-                        access_type, mmu_idx, retaddr);
-            index = tlb_index(env, mmu_idx, addr);
-            entry = tlb_entry(env, mmu_idx, addr);
-            tlb_addr = code_read ? entry->addr_code : entry->addr_read;
-            tlb_addr &= ~TLB_INVALID_MASK;
-        }
+           x70: a flush may also resize the TLB and free `entry`; look it up
+           again instead of testing the old entry for emptiness. */
+        entry = x70_tlb_reload(env, mmu_idx, addr, size, access_type, retaddr,
+                               tlb_off, entry, &index, &tlb_addr);
 
         // callback on non-readable memory
         if (mr != NULL && !(mr->perms & UC_PROT_READ)) {  //non-readable
@@ -1774,18 +1791,9 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
 
             if (handled) {
                 uc->invalid_error = UC_ERR_OK;
-                /* If the TLB entry is for a different page, reload and try again.  */
-                if (!tlb_hit(env->uc, tlb_addr, addr)) {
-                    if (!victim_tlb_hit(env, mmu_idx, index, tlb_off,
-                                        addr & TARGET_PAGE_MASK)) {
-                        tlb_fill(env_cpu(env), addr, size,
-                                 access_type, mmu_idx, retaddr);
-                        index = tlb_index(env, mmu_idx, addr);
-                        entry = tlb_entry(env, mmu_idx, addr);
-                    }
-                    tlb_addr = code_read ? entry->addr_code : entry->addr_read;
-                    tlb_addr &= ~TLB_INVALID_MASK;
-                }
+                /* x70: the hook may have flushed (and resized) the TLB */
+                entry = x70_tlb_reload(env, mmu_idx, addr, size, access_type, retaddr,
+                                       tlb_off, entry, &index, &tlb_addr);
             } else {
                 uc->invalid_addr = paddr;
                 uc->invalid_error = UC_ERR_READ_PROT;
@@ -1824,6 +1832,9 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
 
             if (handled) {
                 uc->invalid_error = UC_ERR_OK;
+                /* x70: the hook may have flushed (and resized) the TLB */
+                entry = x70_tlb_reload(env, mmu_idx, addr, size, access_type, retaddr,
+                                       tlb_off, entry, &index, &tlb_addr);
             } else {
                 uc->invalid_addr = paddr;
                 uc->invalid_error = UC_ERR_FETCH_PROT;
@@ -2291,6 +2302,11 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
             uc->x70_restart_request = false;
             x70_restart_insn(uc->cpu, retaddr, false);
         }
+        /* x70: write hooks may flush (and resize) the TLB, which upstream
+           does not check here: the store would use a flushed or freed
+           entry's addend */
+        entry = x70_tlb_reload(env, mmu_idx, addr, size, MMU_DATA_STORE, retaddr,
+                               tlb_off, entry, &index, &tlb_addr);
     }
 
     // Unicorn: callback on invalid memory
@@ -2324,17 +2340,9 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
             return;
         } else {
             uc->invalid_error = UC_ERR_OK;
-            /* If the TLB entry is for a different page, reload and try again.  */
-            if (!tlb_hit(env->uc, tlb_addr, addr)) {
-                if (!victim_tlb_hit(env, mmu_idx, index, tlb_off,
-                    addr & TARGET_PAGE_MASK)) {
-                    tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE,
-                             mmu_idx, retaddr);
-                    index = tlb_index(env, mmu_idx, addr);
-                    entry = tlb_entry(env, mmu_idx, addr);
-                }
-                tlb_addr = tlb_addr_write(entry) & ~TLB_INVALID_MASK;
-            }
+            /* x70: the hook may have flushed (and resized) the TLB */
+            entry = x70_tlb_reload(env, mmu_idx, addr, size, MMU_DATA_STORE, retaddr,
+                                   tlb_off, entry, &index, &tlb_addr);
             paddr = entry->paddr | (addr & ~TARGET_PAGE_MASK);
             mr = uc->memory_mapping(uc, paddr);
             if (mr == NULL) {
@@ -2369,17 +2377,9 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
         }
 
         if (handled) {
-            /* If the TLB entry is for a different page, reload and try again.  */
-            if (!tlb_hit(env->uc, tlb_addr, addr)) {
-                if (!victim_tlb_hit(env, mmu_idx, index, tlb_off,
-                    addr & TARGET_PAGE_MASK)) {
-                    tlb_fill(env_cpu(env), addr, size, MMU_DATA_STORE,
-                             mmu_idx, retaddr);
-                    index = tlb_index(env, mmu_idx, addr);
-                    entry = tlb_entry(env, mmu_idx, addr);
-                }
-                tlb_addr = tlb_addr_write(entry) & ~TLB_INVALID_MASK;
-            }
+            /* x70: the hook may have flushed (and resized) the TLB */
+            entry = x70_tlb_reload(env, mmu_idx, addr, size, MMU_DATA_STORE, retaddr,
+                                   tlb_off, entry, &index, &tlb_addr);
             uc->invalid_error = UC_ERR_OK;
         } else {
             uc->invalid_addr = paddr;
