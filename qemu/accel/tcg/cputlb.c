@@ -800,57 +800,57 @@ static void tlb_add_large_page(CPUArchState *env, int mmu_idx,
     env_tlb(env)->d[mmu_idx].large_page_mask = lp_mask;
 }
 
-/* x70: does a live hook of the list that is not a watched store hook cover
+/* embedder: does a live hook of the list that is not a watched store hook cover
    paddr? Such an access must be the last instruction of its block while a
-   translation filter is installed (x70_restart_insn). */
-static bool x70_device_access(struct list_item *cur, hwaddr paddr)
+   translation filter is installed (embedder_restart_insn). */
+static bool embedder_device_access(struct list_item *cur, hwaddr paddr)
 {
     for (; cur != NULL; cur = cur->next) {
         struct hook *hook = (struct hook *)cur->data;
-        if (!hook->x70_watched && HOOK_BOUND_CHECK(hook, paddr))
+        if (!hook->embedder_watched && HOOK_BOUND_CHECK(hook, paddr))
             return true;
     }
     return false;
 }
 
-/* x70: is any 1 KiB page of [first, last] watched? */
-static bool x70_watched(struct uc_struct *uc, hwaddr first, hwaddr last)
+/* embedder: is any 1 KiB page of [first, last] watched? */
+static bool embedder_watched(struct uc_struct *uc, hwaddr first, hwaddr last)
 {
     hwaddr page;
-    if (uc->x70_watch == NULL)
+    if (uc->embedder_watch == NULL)
         return false;
     for (page = first >> 10; page <= last >> 10; page++) {
-        if (uc->x70_watch[page >> 3] & (1 << (page & 7)))
+        if (uc->embedder_watch[page >> 3] & (1 << (page & 7)))
             return true;
     }
     return false;
 }
 
-/* x70: does any live hook in the list cover part of [first, last]? A
+/* embedder: does any live hook in the list cover part of [first, last]? A
    watched hook covers only the watched pages of its range. */
-static bool x70_hook_overlaps(struct uc_struct *uc, struct list_item *cur,
+static bool embedder_hook_overlaps(struct uc_struct *uc, struct list_item *cur,
                               hwaddr first, hwaddr last)
 {
     for (; cur != NULL; cur = cur->next) {
         struct hook *hook = (struct hook *)cur->data;
         if (!hook->to_delete &&
             (hook->begin > hook->end || (hook->begin <= last && hook->end >= first)) &&
-            (!hook->x70_watched || x70_watched(uc, first, last)))
+            (!hook->embedder_watched || embedder_watched(uc, first, last)))
             return true;
     }
     return false;
 }
 
-/* x70: watchpoint flags that route a page's data accesses to the slow path,
+/* embedder: watchpoint flags that route a page's data accesses to the slow path,
    where memory hooks run, when a hook range covers the page. */
-static int x70_page_hook_flags(struct uc_struct *uc, hwaddr page)
+static int embedder_page_hook_flags(struct uc_struct *uc, hwaddr page)
 {
     hwaddr last = page + TARGET_PAGE_SIZE - 1;
     int flags = 0;
-    if (x70_hook_overlaps(uc, uc->hook[UC_HOOK_MEM_READ_IDX].head, page, last) ||
-        x70_hook_overlaps(uc, uc->hook[UC_HOOK_MEM_READ_AFTER_IDX].head, page, last))
+    if (embedder_hook_overlaps(uc, uc->hook[UC_HOOK_MEM_READ_IDX].head, page, last) ||
+        embedder_hook_overlaps(uc, uc->hook[UC_HOOK_MEM_READ_AFTER_IDX].head, page, last))
         flags |= BP_MEM_READ;
-    if (x70_hook_overlaps(uc, uc->hook[UC_HOOK_MEM_WRITE_IDX].head, page, last))
+    if (embedder_hook_overlaps(uc, uc->hook[UC_HOOK_MEM_WRITE_IDX].head, page, last))
         flags |= BP_MEM_WRITE;
     return flags;
 }
@@ -930,11 +930,11 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
             if (section->readonly) {
                 write_address |= TLB_DISCARD_WRITE;
             } else if (cpu_physical_memory_is_clean(iotlb)) {
-                /* x70: only watched pages can hold translated code (the
+                /* embedder: only watched pages can hold translated code (the
                    embedder watches every page it sees translated, in every
                    engine and alias); others keep the store fast path. */
-                if (!cpu->uc->x70_page_hooks || cpu->uc->snapshot_level != 0 ||
-                    x70_watched(cpu->uc, paddr_page, paddr_page + TARGET_PAGE_SIZE - 1)) {
+                if (!cpu->uc->embedder_page_hooks || cpu->uc->snapshot_level != 0 ||
+                    embedder_watched(cpu->uc, paddr_page, paddr_page + TARGET_PAGE_SIZE - 1)) {
                     write_address |= TLB_NOTDIRTY;
                 }
             }
@@ -955,8 +955,8 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
 
     wp_flags = cpu_watchpoint_address_matches(cpu, vaddr_page,
                                               TARGET_PAGE_SIZE);
-    if (cpu->uc->x70_page_hooks) {
-        wp_flags |= x70_page_hook_flags(cpu->uc, paddr_page);
+    if (cpu->uc->embedder_page_hooks) {
+        wp_flags |= embedder_page_hook_flags(cpu->uc, paddr_page);
     }
 
     index = tlb_index(env, mmu_idx, vaddr_page);
@@ -1194,14 +1194,14 @@ static bool victim_tlb_hit(CPUArchState *env, size_t mmu_idx, size_t index,
   victim_tlb_hit(env, mmu_idx, index, offsetof(CPUTLBEntry, TY), \
                  (ADDR) & TARGET_PAGE_MASK)
 
-/* x70: memory hooks may flush the TLB (uc_x70_watch from the embedder's
+/* embedder: memory hooks may flush the TLB (uc_embedder_watch from the embedder's
    hooks, uc_hook_add, mapping changes), and a flush may resize it, which
    frees the table `entry` points into. After hooks run, look the entry up
    again from env and refill it if the flush emptied it, so the access never
    uses a stale or freed entry's addend. `tlb_addr` is the entry's word at
    `tlb_off` without TLB_INVALID_MASK, as the helpers keep it. Unchanged
    entries are returned as they are. */
-static CPUTLBEntry *x70_tlb_reload(CPUArchState *env, uintptr_t mmu_idx,
+static CPUTLBEntry *embedder_tlb_reload(CPUArchState *env, uintptr_t mmu_idx,
                                    target_ulong addr, int size,
                                    MMUAccessType access_type,
                                    uintptr_t retaddr, size_t tlb_off,
@@ -1707,8 +1707,8 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
 
         if (handled) {
             uc->invalid_error = UC_ERR_OK;
-            /* x70: the hook may have flushed (and resized) the TLB */
-            entry = x70_tlb_reload(env, mmu_idx, addr, size, access_type, retaddr,
+            /* embedder: the hook may have flushed (and resized) the TLB */
+            entry = embedder_tlb_reload(env, mmu_idx, addr, size, access_type, retaddr,
                                    tlb_off, entry, &index, &tlb_addr);
             paddr = entry->paddr | (addr & ~TARGET_PAGE_MASK);
             mr = uc->memory_mapping(uc, paddr);
@@ -1740,10 +1740,10 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
     // now it is read on mapped memory
     // patch issue #1041 multiple UC_HOOK_MEM callbacks for unaligned access
     if (!code_read && !uc->size_recur_mem) {
-        if (uc->x70_insn_filter &&
-            (x70_device_access(uc->hook[UC_HOOK_MEM_READ_IDX].head, paddr) ||
-             x70_device_access(uc->hook[UC_HOOK_MEM_READ_AFTER_IDX].head, paddr))) {
-            x70_restart_insn(uc->cpu, retaddr, true);
+        if (uc->embedder_insn_filter &&
+            (embedder_device_access(uc->hook[UC_HOOK_MEM_READ_IDX].head, paddr) ||
+             embedder_device_access(uc->hook[UC_HOOK_MEM_READ_AFTER_IDX].head, paddr))) {
+            embedder_restart_insn(uc->cpu, retaddr, true);
         }
         // this is date reading
         HOOK_FOREACH(uc, hook, UC_HOOK_MEM_READ) {
@@ -1762,9 +1762,9 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
         }
 
         /* Unicorn: Previous callbacks may invalidate TLB, reload everything.
-           x70: a flush may also resize the TLB and free `entry`; look it up
+           embedder: a flush may also resize the TLB and free `entry`; look it up
            again instead of testing the old entry for emptiness. */
-        entry = x70_tlb_reload(env, mmu_idx, addr, size, access_type, retaddr,
+        entry = embedder_tlb_reload(env, mmu_idx, addr, size, access_type, retaddr,
                                tlb_off, entry, &index, &tlb_addr);
 
         // callback on non-readable memory
@@ -1791,8 +1791,8 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
 
             if (handled) {
                 uc->invalid_error = UC_ERR_OK;
-                /* x70: the hook may have flushed (and resized) the TLB */
-                entry = x70_tlb_reload(env, mmu_idx, addr, size, access_type, retaddr,
+                /* embedder: the hook may have flushed (and resized) the TLB */
+                entry = embedder_tlb_reload(env, mmu_idx, addr, size, access_type, retaddr,
                                        tlb_off, entry, &index, &tlb_addr);
             } else {
                 uc->invalid_addr = paddr;
@@ -1832,8 +1832,8 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
 
             if (handled) {
                 uc->invalid_error = UC_ERR_OK;
-                /* x70: the hook may have flushed (and resized) the TLB */
-                entry = x70_tlb_reload(env, mmu_idx, addr, size, access_type, retaddr,
+                /* embedder: the hook may have flushed (and resized) the TLB */
+                entry = embedder_tlb_reload(env, mmu_idx, addr, size, access_type, retaddr,
                                        tlb_off, entry, &index, &tlb_addr);
             } else {
                 uc->invalid_addr = paddr;
@@ -2275,9 +2275,9 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
     mr = uc->memory_mapping(uc, paddr);
 
     if (!uc->size_recur_mem) { // disabling write callback if in recursive call
-        if (uc->x70_insn_filter &&
-            x70_device_access(uc->hook[UC_HOOK_MEM_WRITE_IDX].head, paddr)) {
-            x70_restart_insn(uc->cpu, retaddr, true);
+        if (uc->embedder_insn_filter &&
+            embedder_device_access(uc->hook[UC_HOOK_MEM_WRITE_IDX].head, paddr)) {
+            embedder_restart_insn(uc->cpu, retaddr, true);
         }
         // Unicorn: callback on memory write
         HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE) {
@@ -2285,9 +2285,9 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
                 continue;
             if (!HOOK_BOUND_CHECK(hook, paddr))
                 continue;
-            // x70: watched store hooks may skip the PC restore
+            // embedder: watched store hooks may skip the PC restore
             if (!synced && !uc->skip_sync_pc_on_exit &&
-                !(uc->x70_write_hook_no_pc_sync && hook->x70_watched) && retaddr) {
+                !(uc->embedder_write_hook_no_pc_sync && hook->embedder_watched) && retaddr) {
                 cpu_restore_state(uc->cpu, retaddr, false);
                 synced = true;
             }
@@ -2296,16 +2296,16 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
             if (uc->stop_request)
                 break;
         }
-        // x70: a hook found this store overwrote translated code; the store
+        // embedder: a hook found this store overwrote translated code; the store
         // is redone in a block of its own so execution can stop right after
-        if (uc->x70_restart_request) {
-            uc->x70_restart_request = false;
-            x70_restart_insn(uc->cpu, retaddr, false);
+        if (uc->embedder_restart_request) {
+            uc->embedder_restart_request = false;
+            embedder_restart_insn(uc->cpu, retaddr, false);
         }
-        /* x70: write hooks may flush (and resize) the TLB, which upstream
+        /* embedder: write hooks may flush (and resize) the TLB, which upstream
            does not check here: the store would use a flushed or freed
            entry's addend */
-        entry = x70_tlb_reload(env, mmu_idx, addr, size, MMU_DATA_STORE, retaddr,
+        entry = embedder_tlb_reload(env, mmu_idx, addr, size, MMU_DATA_STORE, retaddr,
                                tlb_off, entry, &index, &tlb_addr);
     }
 
@@ -2340,8 +2340,8 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
             return;
         } else {
             uc->invalid_error = UC_ERR_OK;
-            /* x70: the hook may have flushed (and resized) the TLB */
-            entry = x70_tlb_reload(env, mmu_idx, addr, size, MMU_DATA_STORE, retaddr,
+            /* embedder: the hook may have flushed (and resized) the TLB */
+            entry = embedder_tlb_reload(env, mmu_idx, addr, size, MMU_DATA_STORE, retaddr,
                                    tlb_off, entry, &index, &tlb_addr);
             paddr = entry->paddr | (addr & ~TARGET_PAGE_MASK);
             mr = uc->memory_mapping(uc, paddr);
@@ -2377,8 +2377,8 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
         }
 
         if (handled) {
-            /* x70: the hook may have flushed (and resized) the TLB */
-            entry = x70_tlb_reload(env, mmu_idx, addr, size, MMU_DATA_STORE, retaddr,
+            /* embedder: the hook may have flushed (and resized) the TLB */
+            entry = embedder_tlb_reload(env, mmu_idx, addr, size, MMU_DATA_STORE, retaddr,
                                    tlb_off, entry, &index, &tlb_addr);
             uc->invalid_error = UC_ERR_OK;
         } else {

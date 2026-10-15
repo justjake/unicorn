@@ -170,7 +170,7 @@ struct hook {
     void *callback;      // a uc_cb_* type
     void *user_data;
     GHashTable *hooked_regions; // The regions this hook instrumented on
-    bool x70_watched; // x70: write hook slows only watched pages (x70_watch)
+    bool embedder_watched; // embedder: write hook slows only watched pages (embedder_watch)
 };
 
 // Add an inline hook to helper_table
@@ -433,30 +433,30 @@ struct uc_struct {
     bool thread_executable_entry;
     bool current_executable;
     bool skip_sync_pc_on_exit;
-    // x70: do not restore the guest PC before UC_HOOK_MEM_WRITE callbacks
-    bool x70_write_hook_no_pc_sync;
-    // x70: memory hooks take the slow path only on pages a hook range covers
-    bool x70_page_hooks;
-    // x70: one bit per 1 KiB physical page whose stores reach x70_watched
+    // embedder: do not restore the guest PC before UC_HOOK_MEM_WRITE callbacks
+    bool embedder_write_hook_no_pc_sync;
+    // embedder: memory hooks take the slow path only on pages a hook range covers
+    bool embedder_page_hooks;
+    // embedder: one bit per 1 KiB physical page whose stores reach embedder_watched
     // write hooks from the TLB fast path's slow path
-    uint8_t *x70_watch;
-    // x70: translation filter (ARM state). Returns 0 for no code hook, 1 for
+    uint8_t *embedder_watch;
+    // embedder: translation filter (ARM state). Returns 0 for no code hook, 1 for
     // the hook, 2 for the hook and the end of the translated block after the
     // instruction. While installed, an instruction touching a page an
     // unwatched memory hook covers is restarted once as the last instruction
-    // of a block, and its address ends later blocks (x70_io_pcs).
-    int (*x70_insn_filter)(void *user, uint64_t pc, uint32_t insn);
-    // x70: called with the guest PC of an instruction about to be restarted;
+    // of a block, and its address ends later blocks (embedder_io_pcs).
+    int (*embedder_insn_filter)(void *user, uint64_t pc, uint32_t insn);
+    // embedder: called with the guest PC of an instruction about to be restarted;
     // the instructions before it in its block have executed, it has not.
-    void (*x70_restart)(void *user, uint64_t pc);
-    void *x70_filter_user;
-    int x70_insn_decision;   // filter result for the instruction being translated
-    GHashTable *x70_io_pcs;  // guest PCs of instructions ending their block
-    uint32_t x70_retry_limit; // block hook: retranslate this block this short
-    bool x70_restart_request; // write hook: restart the storing instruction
-    bool x70_tb_thumb;        // Thumb state of the block being translated
-    bool x70_tb_slow;         // the filter asked for the block hook on every entry
-    // x70: budgeted block accounting (uc_x70_accounting). A block translated
+    void (*embedder_restart)(void *user, uint64_t pc);
+    void *embedder_filter_user;
+    int embedder_insn_decision;   // filter result for the instruction being translated
+    GHashTable *embedder_io_pcs;  // guest PCs of instructions ending their block
+    uint32_t embedder_retry_limit; // block hook: retranslate this block this short
+    bool embedder_restart_request; // write hook: restart the storing instruction
+    bool embedder_tb_thumb;        // Thumb state of the block being translated
+    bool embedder_tb_slow;         // the filter asked for the block hook on every entry
+    // embedder: budgeted block accounting (uc_embedder_accounting). A block translated
     // as "fast" (block hook size bit 30) whose instruction count fits in
     // `budget` is entered without calling hooks: the count is subtracted and
     // (start << 32 | count) is pushed to `ring[head++ & mask]`.
@@ -466,7 +466,7 @@ struct uc_struct {
         uint64_t *ring;
         uint64_t mask;
         uint64_t enabled;
-    } x70_acct;
+    } embedder_acct;
 };
 
 // Metadata stub for the variable-size cpu context used with uc_context_*()

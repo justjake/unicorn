@@ -10944,8 +10944,8 @@ static void disas_arm_insn(DisasContext *s, unsigned int insn)
     }
 
     // Unicorn: trace this instruction on request
-    // x70: unless the translation filter declined it (arm_tr_translate_insn)
-    if ((s->uc->x70_insn_decision & 3) != 0 &&
+    // embedder: unless the translation filter declined it (arm_tr_translate_insn)
+    if ((s->uc->embedder_insn_decision & 3) != 0 &&
         HOOK_EXISTS_BOUNDED(s->uc, UC_HOOK_CODE, s->pc_curr)) {
 
         // Sync PC in advance
@@ -11250,7 +11250,7 @@ static void arm_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
     dc->secure_routed_to_el3 = arm_feature(env, ARM_FEATURE_EL3) &&
                                !arm_el_is_aa64(env, 3);
     dc->thumb = FIELD_EX32(tb_flags, TBFLAG_AM32, THUMB);
-    uc->x70_tb_thumb = dc->thumb;
+    uc->embedder_tb_thumb = dc->thumb;
     dc->be_data = FIELD_EX32(tb_flags, TBFLAG_ANY, BE_DATA) ? MO_BE : MO_LE;
     condexec = FIELD_EX32(tb_flags, TBFLAG_AM32, CONDEXEC);
     dc->condexec_mask = (condexec & 0xf) << 1;
@@ -11486,8 +11486,8 @@ static void arm_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         }
 
         dc->base.pc_next += 4;
-        dc->uc->x70_insn_decision = dc->uc->x70_insn_filter
-            ? dc->uc->x70_insn_filter(dc->uc->x70_filter_user, dc->pc_curr, insn) : 1;
+        dc->uc->embedder_insn_decision = dc->uc->embedder_insn_filter
+            ? dc->uc->embedder_insn_filter(dc->uc->embedder_filter_user, dc->pc_curr, insn) : 1;
         disas_arm_insn(dc, insn);
 
         arm_post_translate_insn(dc);

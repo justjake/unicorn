@@ -507,9 +507,9 @@ uc_err uc_close(uc_engine *uc)
     // Flush all translation buffers or we leak memory allocated by MMU
     uc->tb_flush(uc);
 
-    g_free(uc->x70_watch);
-    if (uc->x70_io_pcs) {
-        g_hash_table_destroy(uc->x70_io_pcs);
+    g_free(uc->embedder_watch);
+    if (uc->embedder_io_pcs) {
+        g_hash_table_destroy(uc->embedder_io_pcs);
     }
 
     // Cleanup internally.
@@ -2033,8 +2033,8 @@ uc_err uc_hook_add(uc_engine *uc, uc_hook *hh, int type, void *callback,
         free(hook);
     }
 
-    // x70: existing TLB entries do not carry the new hook's page flags
-    if (uc->x70_page_hooks && uc->init_done &&
+    // embedder: existing TLB entries do not carry the new hook's page flags
+    if (uc->embedder_page_hooks && uc->init_done &&
         (type & (UC_HOOK_MEM_READ | UC_HOOK_MEM_READ_AFTER | UC_HOOK_MEM_WRITE))) {
         uc->tcg_flush_tlb(uc);
     }
@@ -2138,12 +2138,12 @@ void helper_uc_tracecode(int32_t size, uc_hook_idx index, void *handle,
         revert_uc_emu_stop(uc);
     }
 
-    // x70: budgeted block accounting (see uc_priv.h x70_acct)
-    if (index == UC_HOOK_BLOCK_IDX && (size & 0x40000000) && uc->x70_acct.enabled) {
+    // embedder: budgeted block accounting (see uc_priv.h embedder_acct)
+    if (index == UC_HOOK_BLOCK_IDX && (size & 0x40000000) && uc->embedder_acct.enabled) {
         int64_t count = (size & 0x3fffffff) >> 2;
-        if (uc->x70_acct.budget >= count) {
-            uc->x70_acct.budget -= count;
-            uc->x70_acct.ring[uc->x70_acct.head++ & uc->x70_acct.mask] =
+        if (uc->embedder_acct.budget >= count) {
+            uc->embedder_acct.budget -= count;
+            uc->embedder_acct.ring[uc->embedder_acct.head++ & uc->embedder_acct.mask] =
                 ((uint64_t)(uint32_t)address << 32) | (uint64_t)count;
             return;
         }
@@ -3091,46 +3091,46 @@ void trace_end(uc_tracer *tracer, trace_loc loc, const char *fmt, ...)
 }
 #endif
 
-// x70: skip the guest-PC restore before memory-write hooks. Callers whose
+// embedder: skip the guest-PC restore before memory-write hooks. Callers whose
 // write hooks never read the PC avoid a TB lookup per hooked store.
 UNICORN_EXPORT
-uc_err uc_x70_set_write_hook_pc_sync(uc_engine *uc, bool sync)
+uc_err uc_embedder_set_write_hook_pc_sync(uc_engine *uc, bool sync)
 {
-    uc->x70_write_hook_no_pc_sync = !sync;
+    uc->embedder_write_hook_no_pc_sync = !sync;
     return UC_ERR_OK;
 }
 
-// x70: route data accesses to the slow path only on pages a memory-hook range
+// embedder: route data accesses to the slow path only on pages a memory-hook range
 // covers (TLB_WATCHPOINT), instead of every access once any memory hook exists.
 UNICORN_EXPORT
-uc_err uc_x70_set_page_hooks(uc_engine *uc, bool enabled)
+uc_err uc_embedder_set_page_hooks(uc_engine *uc, bool enabled)
 {
     UC_INIT(uc);
-    uc->x70_page_hooks = enabled;
+    uc->embedder_page_hooks = enabled;
     uc->tb_flush(uc);
     uc->tcg_flush_tlb(uc);
     restore_jit_state(uc);
     return UC_ERR_OK;
 }
 
-// x70: a watched write hook (x70_page_hooks mode) slows down and sees fast-path
+// embedder: a watched write hook (embedder_page_hooks mode) slows down and sees fast-path
 // stores only on watched pages; slow-path stores elsewhere still reach it.
 UNICORN_EXPORT
-uc_err uc_x70_set_hook_watched(uc_engine *uc, uc_hook hh, bool watched)
+uc_err uc_embedder_set_hook_watched(uc_engine *uc, uc_hook hh, bool watched)
 {
     struct hook *hook = (struct hook *)hh;
     UC_INIT(uc);
-    if (hook->x70_watched != watched) {
-        hook->x70_watched = watched;
+    if (hook->embedder_watched != watched) {
+        hook->embedder_watched = watched;
         uc->tcg_flush_tlb(uc);
     }
     restore_jit_state(uc);
     return UC_ERR_OK;
 }
 
-// x70: watch the 1 KiB physical pages covering [address, address + size).
+// embedder: watch the 1 KiB physical pages covering [address, address + size).
 UNICORN_EXPORT
-uc_err uc_x70_watch(uc_engine *uc, uint64_t address, uint64_t size)
+uc_err uc_embedder_watch(uc_engine *uc, uint64_t address, uint64_t size)
 {
     uint64_t page;
     bool changed = false;
@@ -3139,12 +3139,12 @@ uc_err uc_x70_watch(uc_engine *uc, uint64_t address, uint64_t size)
         restore_jit_state(uc);
         return UC_ERR_ARG;
     }
-    if (uc->x70_watch == NULL) {
-        uc->x70_watch = g_malloc0(1 << 19);
+    if (uc->embedder_watch == NULL) {
+        uc->embedder_watch = g_malloc0(1 << 19);
     }
     for (page = address >> 10; page <= (address + size - 1) >> 10; page++) {
-        if (!(uc->x70_watch[page >> 3] & (1 << (page & 7)))) {
-            uc->x70_watch[page >> 3] |= 1 << (page & 7);
+        if (!(uc->embedder_watch[page >> 3] & (1 << (page & 7)))) {
+            uc->embedder_watch[page >> 3] |= 1 << (page & 7);
             changed = true;
         }
     }
@@ -3154,10 +3154,10 @@ uc_err uc_x70_watch(uc_engine *uc, uint64_t address, uint64_t size)
     return UC_ERR_OK;
 }
 
-// x70: retire physical page watches after the embedder releases its last
+// embedder: retire physical page watches after the embedder releases its last
 // dependency. The embedder retains watches needed by code or reservations.
 UNICORN_EXPORT
-uc_err uc_x70_unwatch(uc_engine *uc, uint64_t address, uint64_t size)
+uc_err uc_embedder_unwatch(uc_engine *uc, uint64_t address, uint64_t size)
 {
     uint64_t page;
     bool changed = false;
@@ -3167,10 +3167,10 @@ uc_err uc_x70_unwatch(uc_engine *uc, uint64_t address, uint64_t size)
         restore_jit_state(uc);
         return UC_ERR_ARG;
     }
-    if (uc->x70_watch != NULL) {
+    if (uc->embedder_watch != NULL) {
         for (page = address >> 10; page <= (address + size - 1) >> 10; page++) {
-            if (uc->x70_watch[page >> 3] & (1 << (page & 7))) {
-                uc->x70_watch[page >> 3] &= ~(1 << (page & 7));
+            if (uc->embedder_watch[page >> 3] & (1 << (page & 7))) {
+                uc->embedder_watch[page >> 3] &= ~(1 << (page & 7));
                 changed = true;
             }
         }
@@ -3181,59 +3181,59 @@ uc_err uc_x70_unwatch(uc_engine *uc, uint64_t address, uint64_t size)
     return UC_ERR_OK;
 }
 
-// x70: install (or with filter NULL remove) the ARM translation filter and
+// embedder: install (or with filter NULL remove) the ARM translation filter and
 // the restart callback (see uc_priv.h). Translations made under the previous
 // setting are flushed.
 UNICORN_EXPORT
-uc_err uc_x70_set_insn_filter(uc_engine *uc,
+uc_err uc_embedder_set_insn_filter(uc_engine *uc,
                               int (*filter)(void *user, uint64_t pc, uint32_t insn),
                               void (*restart)(void *user, uint64_t pc), void *user)
 {
     UC_INIT(uc);
-    if (uc->x70_insn_filter != filter || uc->x70_restart != restart ||
-        uc->x70_filter_user != user) {
-        uc->x70_insn_filter = filter;
-        uc->x70_restart = restart;
-        uc->x70_filter_user = user;
+    if (uc->embedder_insn_filter != filter || uc->embedder_restart != restart ||
+        uc->embedder_filter_user != user) {
+        uc->embedder_insn_filter = filter;
+        uc->embedder_restart = restart;
+        uc->embedder_filter_user = user;
         uc->tb_flush(uc);
     }
     restore_jit_state(uc);
     return UC_ERR_OK;
 }
 
-// x70: from a block hook, have the block just hooked retranslated with only
+// embedder: from a block hook, have the block just hooked retranslated with only
 // `limit` (1..32767) instructions before it executes; 0 cancels.
 UNICORN_EXPORT
-uc_err uc_x70_retry_block(uc_engine *uc, uint32_t limit)
+uc_err uc_embedder_retry_block(uc_engine *uc, uint32_t limit)
 {
-    uc->x70_retry_limit = limit;
+    uc->embedder_retry_limit = limit;
     return UC_ERR_OK;
 }
 
-// x70: from a memory write hook, redo the storing instruction as a block of
+// embedder: from a memory write hook, redo the storing instruction as a block of
 // its own once the hooks return (with a filter installed).
 UNICORN_EXPORT
-uc_err uc_x70_request_restart(uc_engine *uc)
+uc_err uc_embedder_request_restart(uc_engine *uc)
 {
-    uc->x70_restart_request = true;
+    uc->embedder_restart_request = true;
     return UC_ERR_OK;
 }
 
-// x70: feature bits of these exports. 1: with a translation filter installed,
-// bit 31 of a block hook's size reports Thumb state. 2: uc_x70_accounting and
+// embedder: feature bits of these exports. 1: with a translation filter installed,
+// bit 31 of a block hook's size reports Thumb state. 2: uc_embedder_accounting and
 // filter decision bit 4 (block hook on every entry); bit 30 marks fast blocks.
 UNICORN_EXPORT
-uint32_t uc_x70_features(void)
+uint32_t uc_embedder_features(void)
 {
     return 1 | 2;
 }
 
-// x70: the budgeted block accounting record (uc_priv.h): the embedder reads
+// embedder: the budgeted block accounting record (uc_priv.h): the embedder reads
 // and writes budget and head directly; ring/mask/enabled are its to set while
 // no emulation runs. Layout: int64 budget, u64 head, u64 *ring, u64 mask,
 // u64 enabled.
 UNICORN_EXPORT
-void *uc_x70_accounting(uc_engine *uc)
+void *uc_embedder_accounting(uc_engine *uc)
 {
-    return &uc->x70_acct;
+    return &uc->embedder_acct;
 }

@@ -82,7 +82,7 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
 
     // tcg_dump_ops(tcg_ctx, false, "translator loop");
 
-    uc->x70_tb_slow = false;
+    uc->embedder_tb_slow = false;
 
     /* Start translating.  */
     gen_tb_start(tcg_ctx, db->tb);
@@ -94,16 +94,16 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
     tcg_debug_assert(db->is_jmp == DISAS_NEXT);  /* no early exit */
 
     while (true) {
-        target_ulong x70_pc = db->pc_next;
+        target_ulong embedder_pc = db->pc_next;
 
-        // x70: an instruction that touched a hooked device page starts its
+        // embedder: an instruction that touched a hooked device page starts its
         // own block (it is also the last of it, below)
-        if (db->num_insns > 0 && uc->x70_io_pcs &&
-            g_hash_table_lookup(uc->x70_io_pcs, (gconstpointer)(uintptr_t)x70_pc)) {
+        if (db->num_insns > 0 && uc->embedder_io_pcs &&
+            g_hash_table_lookup(uc->embedder_io_pcs, (gconstpointer)(uintptr_t)embedder_pc)) {
             db->is_jmp = DISAS_TOO_MANY;
             break;
         }
-        uc->x70_insn_decision = 1;
+        uc->embedder_insn_decision = 1;
 
         db->num_insns++;
 
@@ -143,14 +143,14 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
             break;
         }
 
-        // x70: the filter may ask for the block hook on every entry (4)
-        if (uc->x70_insn_decision & 4) {
-            uc->x70_tb_slow = true;
+        // embedder: the filter may ask for the block hook on every entry (4)
+        if (uc->embedder_insn_decision & 4) {
+            uc->embedder_tb_slow = true;
         }
-        // x70: a hooked special instruction or a device access ends its block
-        if (uc->x70_insn_filter && ((uc->x70_insn_decision & 3) == 2 ||
-            (uc->x70_io_pcs &&
-             g_hash_table_lookup(uc->x70_io_pcs, (gconstpointer)(uintptr_t)x70_pc)))) {
+        // embedder: a hooked special instruction or a device access ends its block
+        if (uc->embedder_insn_filter && ((uc->embedder_insn_decision & 3) == 2 ||
+            (uc->embedder_io_pcs &&
+             g_hash_table_lookup(uc->embedder_io_pcs, (gconstpointer)(uintptr_t)embedder_pc)))) {
             db->is_jmp = DISAS_TOO_MANY;
             break;
         }
@@ -192,14 +192,14 @@ _end_loop:
         }
 
         tcg_op->args[1] = db->tb->size;
-        // x70: with a translation filter installed, bit 31 of the block
+        // embedder: with a translation filter installed, bit 31 of the block
         // hook's size reports Thumb state, so the hook need not read CPSR.
-        if (uc->x70_insn_filter && uc->x70_tb_thumb) {
+        if (uc->embedder_insn_filter && uc->embedder_tb_thumb) {
             tcg_op->args[1] |= 0x80000000u;
         }
-        // x70: bit 30 marks a block budgeted accounting may enter without
+        // embedder: bit 30 marks a block budgeted accounting may enter without
         // hooks (ARM, every instruction filtered, no hook requested).
-        if (uc->x70_insn_filter && !uc->x70_tb_thumb && !uc->x70_tb_slow) {
+        if (uc->embedder_insn_filter && !uc->embedder_tb_thumb && !uc->embedder_tb_slow) {
             tcg_op->args[1] |= 0x40000000u;
         }
     }

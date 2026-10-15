@@ -2084,9 +2084,9 @@ void tb_check_watchpoint(CPUState *cpu, uintptr_t retaddr)
  *
  * Called by softmmu_template.h, with iothread mutex not held.
  */
-/* x70: index within its block of the instruction containing host address
+/* embedder: index within its block of the instruction containing host address
    retaddr (a helper's return address), or -1. */
-static int x70_insn_index(TranslationBlock *tb, uintptr_t retaddr)
+static int embedder_insn_index(TranslationBlock *tb, uintptr_t retaddr)
 {
     target_ulong data[TARGET_INSN_START_WORDS] = { tb->pc };
     uintptr_t host_pc = (uintptr_t)tb->tc.ptr;
@@ -2109,11 +2109,11 @@ static int x70_insn_index(TranslationBlock *tb, uintptr_t retaddr)
     return -1;
 }
 
-/* x70: unless it already is the last instruction of its block, restart the
+/* embedder: unless it already is the last instruction of its block, restart the
    instruction executing at retaddr as a block of its own. remember: also end
    later translations at it and retranslate the block it was found in. The
-   embedder's x70_restart callback learns its PC first. */
-void x70_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember)
+   embedder's embedder_restart callback learns its PC first. */
+void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember)
 {
     struct uc_struct *uc = cpu->uc;
     TCGContext *tcg_ctx = uc->tcg_ctx;
@@ -2124,21 +2124,21 @@ void x70_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember)
     if (!retaddr || !(tb = tcg_tb_lookup(tcg_ctx, retaddr))) {
         return;
     }
-    index = x70_insn_index(tb, retaddr);
+    index = embedder_insn_index(tb, retaddr);
     if (index < 0 || index == tb->icount - 1) {
         return;
     }
     cpu_restore_state_from_tb(cpu, tb, retaddr, true);
     pc = (uc->get_pc ? uc->get_pc(uc) : 0) & ~(uint64_t)1;
     if (remember) {
-        if (!uc->x70_io_pcs) {
-            uc->x70_io_pcs = g_hash_table_new(NULL, NULL);
+        if (!uc->embedder_io_pcs) {
+            uc->embedder_io_pcs = g_hash_table_new(NULL, NULL);
         }
-        g_hash_table_insert(uc->x70_io_pcs, (gpointer)(uintptr_t)pc, (gpointer)1);
+        g_hash_table_insert(uc->embedder_io_pcs, (gpointer)(uintptr_t)pc, (gpointer)1);
         tb_phys_invalidate(tcg_ctx, tb, -1);
     }
-    if (uc->x70_restart) {
-        uc->x70_restart(uc->x70_filter_user, pc);
+    if (uc->embedder_restart) {
+        uc->embedder_restart(uc->embedder_filter_user, pc);
     }
     cpu->cflags_next_tb = curr_cflags() | CF_LAST_IO | 1;
     if (uc->nested_level == 1) {

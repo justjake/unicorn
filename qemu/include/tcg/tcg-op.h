@@ -47,11 +47,11 @@ static inline void gen_uc_tracecode(TCGContext *tcg_ctx, int32_t size, int32_t t
     };
 
     const int hook_type = type & UC_HOOK_IDX_MASK;
-    // x70: with a translation filter installed, block hooks go through
+    // embedder: with a translation filter installed, block hooks go through
     // helper_uc_tracecode, whose budgeted accounting enters fast blocks
     // without calling the hook.
     if (puc->hooks_count[hook_type] == 1 && !(type & UC_HOOK_FLAG_NO_STOP)
-            && !(hook_type == UC_HOOK_BLOCK_IDX && puc->x70_insn_filter)) {
+            && !(hook_type == UC_HOOK_BLOCK_IDX && puc->embedder_insn_filter)) {
         cur = puc->hook[hook_type].head;
         
         while (cur) {
