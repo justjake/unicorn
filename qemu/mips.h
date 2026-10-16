@@ -6,6 +6,7 @@
 #endif
 #define tcg_qemu_tb_exec tcg_qemu_tb_exec_mips
 #define tci_tb_ptr tci_tb_ptr_mips
+#define tci_call_helper tci_call_helper_mips
 #define tci_disas tci_disas_mips
 #define gen_helper_check_exit_request gen_helper_check_exit_request_mips
 #define unicorn_fill_tlb unicorn_fill_tlb_mips

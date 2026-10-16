@@ -146,7 +146,11 @@ static void tcg_out_st(TCGContext *s, TCGType type, TCGReg arg, TCGReg arg1,
                        intptr_t arg2);
 static bool tcg_out_sti(TCGContext *s, TCGType type, TCGArg val,
                         TCGReg base, intptr_t ofs);
+#ifdef __EMSCRIPTEN__
+static void tcg_out_call(TCGContext *s, tcg_insn_unit *target, int words, unsigned sizemask);
+#else
 static void tcg_out_call(TCGContext *s, tcg_insn_unit *target);
+#endif
 static int tcg_target_const_match(tcg_target_long val, TCGType type,
                                   const TCGArgConstraint *arg_ct);
 #ifdef TCG_TARGET_NEED_LDST_LABELS
@@ -3672,7 +3676,12 @@ static void tcg_reg_alloc_call(TCGContext *s, TCGOp *op)
         save_globals(s, allocated_regs);
     }
 
+#ifdef __EMSCRIPTEN__
+    TCGHelperInfo *info = g_hash_table_lookup(s->helper_table, func_addr);
+    tcg_out_call(s, func_addr, nb_iargs, info->sizemask);
+#else
     tcg_out_call(s, func_addr);
+#endif
 
     /* assign output registers and emit moves if needed */
     for(i = 0; i < nb_oargs; i++) {

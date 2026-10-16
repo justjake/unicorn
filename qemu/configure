@@ -396,7 +396,9 @@ int main(void) { return 0; }
 EOF
 }
 
-if check_define __linux__ ; then
+if check_define __EMSCRIPTEN__ ; then
+  targetos="Emscripten"
+elif check_define __linux__ ; then
   targetos="Linux"
 elif check_define _WIN32 ; then
   targetos='MINGW32'
@@ -494,6 +496,8 @@ elif check_define __tricore__ ; then
   cpu="tricore"
 elif check_define __loongarch64 ; then
   cpu="loongarch64"
+elif check_define __wasm32__ ; then
+  cpu="wasm32"
 else
   cpu=$(uname -m)
 fi
@@ -502,7 +506,7 @@ ARCH=
 # Normalise host CPU name and set ARCH.
 # Note that this case should only have supported host CPUs, not guests.
 case "$cpu" in
-  ppc|ppc64|s390x|sparc64|x32|riscv32|riscv64)
+  wasm32|ppc|ppc64|s390x|sparc64|x32|riscv32|riscv64)
     supported_cpu="yes"
   ;;
   ppc64le)
@@ -556,6 +560,9 @@ fi
 HOST_VARIANT_DIR=""
 
 case $targetos in
+Emscripten)
+  supported_os="yes"
+;;
 MINGW32*)
   mingw32="yes"
   supported_os="yes"

@@ -546,11 +546,20 @@ static void tcg_out_movi(TCGContext *s, TCGType type,
     old_code_ptr[1] = s->code_ptr - old_code_ptr;
 }
 
-static inline void tcg_out_call(TCGContext *s, tcg_insn_unit *arg)
+static inline void tcg_out_call(TCGContext *s, tcg_insn_unit *arg
+#ifdef __EMSCRIPTEN__
+                                , int words, unsigned sizemask
+#endif
+                                )
 {
     uint8_t *old_code_ptr = s->code_ptr;
     tcg_out_op_t(s, INDEX_op_call);
     tcg_out_ri(s, 1, (uintptr_t)arg);
+#ifdef __EMSCRIPTEN__
+    /* Wasm indirect calls require the helper's real integer signature. */
+    tcg_out32(s, words);
+    tcg_out32(s, sizemask);
+#endif
     old_code_ptr[1] = s->code_ptr - old_code_ptr;
 }
 

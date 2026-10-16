@@ -34,6 +34,30 @@
 
 _Thread_local uintptr_t tci_tb_ptr;
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+/* The original TCI casts every helper to one twelve-word prototype. Wasm
+ * rejects those calls. JS calls the same table entry with the declared
+ * signature, reconstructing i64 parameters from TCI's 32-bit register pairs.
+ * This stays local to the interpreter; the CPython/Rust ABI is unchanged. */
+EM_JS(uint64_t, tci_call_helper,
+      (uintptr_t target, const uint32_t *regs, unsigned words, unsigned sizemask), {
+    const indices = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12];
+    const args = [];
+    for (let arg = 1, word = 0; word < words; arg++) {
+        const lo = HEAPU32[(regs >>> 2) + indices[word++]];
+        if ((sizemask >>> (2 * arg)) & 1) {
+            const hi = HEAPU32[(regs >>> 2) + indices[word++]];
+            args.push(BigInt.asIntN(64, (BigInt(hi) << 32n) | BigInt(lo)));
+        } else {
+            args.push(lo);
+        }
+    }
+    const result = wasmTable.get(target)(...args);
+    return typeof result === 'bigint' ? result : BigInt((result ?? 0) >>> 0);
+});
+#endif
+
 /* Marker for missing code. */
 #define TODO() \
     do { \
@@ -519,7 +543,15 @@ uintptr_t tcg_qemu_tb_exec(CPUArchState *env, uint8_t *tb_ptr)
         switch (opc) {
         case INDEX_op_call:
             t0 = tci_read_ri(regs, &tb_ptr);
-#if TCG_TARGET_REG_BITS == 32
+#ifdef __EMSCRIPTEN__
+            {
+                uint32_t words = tci_read_i32(&tb_ptr);
+                uint32_t sizemask = tci_read_i32(&tb_ptr);
+                tmp64 = tci_call_helper(t0, regs, words, sizemask);
+                tci_write_reg(regs, TCG_REG_R0, tmp64);
+                tci_write_reg(regs, TCG_REG_R1, tmp64 >> 32);
+            }
+#elif TCG_TARGET_REG_BITS == 32
             tmp64 = ((helper_function)t0)(tci_read_reg(regs, TCG_REG_R0),
                                           tci_read_reg(regs, TCG_REG_R1),
                                           tci_read_reg(regs, TCG_REG_R2),

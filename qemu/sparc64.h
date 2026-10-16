@@ -6,6 +6,7 @@
 #endif
 #define tcg_qemu_tb_exec tcg_qemu_tb_exec_sparc64
 #define tci_tb_ptr tci_tb_ptr_sparc64
+#define tci_call_helper tci_call_helper_sparc64
 #define tci_disas tci_disas_sparc64
 #define gen_helper_check_exit_request gen_helper_check_exit_request_sparc64
 #define unicorn_fill_tlb unicorn_fill_tlb_sparc64

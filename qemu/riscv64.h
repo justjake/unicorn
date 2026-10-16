@@ -6,6 +6,7 @@
 #endif
 #define tcg_qemu_tb_exec tcg_qemu_tb_exec_riscv64
 #define tci_tb_ptr tci_tb_ptr_riscv64
+#define tci_call_helper tci_call_helper_riscv64
 #define tci_disas tci_disas_riscv64
 #define gen_helper_check_exit_request gen_helper_check_exit_request_riscv64
 #define unicorn_fill_tlb unicorn_fill_tlb_riscv64

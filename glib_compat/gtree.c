@@ -144,6 +144,13 @@ static GTreeNode *g_tree_node_new (gpointer key, gpointer value)
     return node;
 }
 
+/* A two-argument comparator cannot be called through GCompareDataFunc on
+ * targets with checked function signatures (including WebAssembly). */
+static gint compare_without_data(gconstpointer a, gconstpointer b, gpointer compare)
+{
+    return ((GCompareFunc)compare)(a, b);
+}
+
 /**
  * g_tree_new:
  * @key_compare_func: the function used to order the nodes in the #GTree.
@@ -160,7 +167,7 @@ GTree *g_tree_new (GCompareFunc key_compare_func)
 {
     g_return_val_if_fail (key_compare_func != NULL, NULL);
 
-    return g_tree_new_full ((GCompareDataFunc) key_compare_func, NULL,
+    return g_tree_new_full (compare_without_data, (gpointer)key_compare_func,
             NULL, NULL);
 }
 

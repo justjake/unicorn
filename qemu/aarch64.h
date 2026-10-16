@@ -6,6 +6,7 @@
 #endif
 #define tcg_qemu_tb_exec tcg_qemu_tb_exec_aarch64
 #define tci_tb_ptr tci_tb_ptr_aarch64
+#define tci_call_helper tci_call_helper_aarch64
 #define tci_disas tci_disas_aarch64
 #define gen_helper_check_exit_request gen_helper_check_exit_request_aarch64
 #define unicorn_fill_tlb unicorn_fill_tlb_aarch64
