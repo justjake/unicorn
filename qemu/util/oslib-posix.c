@@ -118,6 +118,16 @@ void *qemu_anon_ram_alloc(struct uc_struct *uc, size_t size, uint64_t *alignment
         *alignment = MAX(get_allocation_granularity(), getpagesize());
     }
     return ptr;
+#elif defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
+    /* Linear memory has neither MAP_FIXED nor partial munmap/guard pages. */
+    void *ptr = qemu_try_memalign(QEMU_VMALLOC_ALIGN, size);
+    if (ptr) {
+        memset(ptr, 0, size);
+    }
+    if (alignment) {
+        *alignment = QEMU_VMALLOC_ALIGN;
+    }
+    return ptr;
 #else
     size_t align = QEMU_VMALLOC_ALIGN;
     void *ptr = qemu_ram_mmap(uc, size, align, false);
@@ -153,6 +163,8 @@ void qemu_anon_ram_free(struct uc_struct *uc, void *ptr, size_t size)
     if (ptr) {
         VirtualFree(ptr, 0, MEM_RELEASE);
     }
+#elif defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
+    free(ptr);
 #else
     //trace_qemu_anon_ram_free(ptr, size);
     qemu_ram_munmap(uc, ptr, size);

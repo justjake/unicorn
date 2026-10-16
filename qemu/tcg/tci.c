@@ -31,6 +31,7 @@
 #include "tcg/tcg.h"           /* MAX_OPC_PARAM_IARGS */
 #include "exec/cpu_ldst.h"
 #include "tcg/tcg-op.h"
+#include "uc_priv.h"
 
 _Thread_local uintptr_t tci_tb_ptr;
 
@@ -455,34 +456,99 @@ static bool tci_compare64(uint64_t u0, uint64_t u1, TCGCond condition)
 }
 
 #ifdef CONFIG_SOFTMMU
+#ifdef CONFIG_TCG_INTERPRETER
+/* The same no-flags TLB hit used by the JIT backends. Watched pages,
+ * device accesses, dirty/code pages and misses retain the existing helpers.
+ * Global memory hooks need helpers when page-specific interception is off. */
+static inline void *tci_tlb_pointer(CPUArchState *env, target_ulong addr,
+                                    TCGMemOpIdx oi, bool store)
+{
+    struct uc_struct *uc = env->uc;
+    MemOp op = get_memop(oi);
+    unsigned size = memop_size(op);
+    target_ulong last = addr + size - 1;
+    unsigned align = (1u << get_alignment_bits(op)) - 1;
+    CPUTLBEntry *entry;
+    target_ulong tag;
+
+    if (unlikely(tcg_uc_has_hookmem(uc->tcg_ctx) || (addr & align) ||
+                 last < addr || (addr & TARGET_PAGE_MASK) != (last & TARGET_PAGE_MASK))) {
+        return NULL;
+    }
+    entry = tlb_entry(env, get_mmuidx(oi), addr);
+    tag = store ? tlb_addr_write(entry) : entry->addr_read;
+    if (unlikely(tag != (addr & TARGET_PAGE_MASK))) {
+        return NULL;
+    }
+    return (void *)((uintptr_t)addr + entry->addend);
+}
+
+#define TCI_LOAD(name, type, load, slow) \
+static inline type name(CPUArchState *env, target_ulong addr, \
+                         TCGMemOpIdx oi, uintptr_t retaddr) \
+{ \
+    const void *host = tci_tlb_pointer(env, addr, oi, false); \
+    return likely(host != NULL) ? load(host) : slow(env, addr, oi, retaddr); \
+}
+#define TCI_STORE(name, type, store, slow) \
+static inline void name(CPUArchState *env, target_ulong addr, type value, \
+                         TCGMemOpIdx oi, uintptr_t retaddr) \
+{ \
+    void *host = tci_tlb_pointer(env, addr, oi, true); \
+    if (likely(host != NULL)) { \
+        store(host, value); \
+    } else { \
+        slow(env, addr, value, oi, retaddr); \
+    } \
+}
+TCI_LOAD(tci_ld_ub, uint32_t, ldub_p, helper_ret_ldub_mmu)
+TCI_LOAD(tci_ld_leuw, uint32_t, lduw_le_p, helper_le_lduw_mmu)
+TCI_LOAD(tci_ld_leul, uint32_t, ldl_le_p, helper_le_ldul_mmu)
+TCI_LOAD(tci_ld_leq, uint64_t, ldq_le_p, helper_le_ldq_mmu)
+TCI_LOAD(tci_ld_beuw, uint32_t, lduw_be_p, helper_be_lduw_mmu)
+TCI_LOAD(tci_ld_beul, uint32_t, ldl_be_p, helper_be_ldul_mmu)
+TCI_LOAD(tci_ld_beq, uint64_t, ldq_be_p, helper_be_ldq_mmu)
+TCI_STORE(tci_st_b, uint32_t, stb_p, helper_ret_stb_mmu)
+TCI_STORE(tci_st_lew, uint32_t, stw_le_p, helper_le_stw_mmu)
+TCI_STORE(tci_st_lel, uint32_t, stl_le_p, helper_le_stl_mmu)
+TCI_STORE(tci_st_leq, uint64_t, stq_le_p, helper_le_stq_mmu)
+TCI_STORE(tci_st_bew, uint32_t, stw_be_p, helper_be_stw_mmu)
+TCI_STORE(tci_st_bel, uint32_t, stl_be_p, helper_be_stl_mmu)
+TCI_STORE(tci_st_beq, uint64_t, stq_be_p, helper_be_stq_mmu)
+#undef TCI_LOAD
+#undef TCI_STORE
+#define TCI_MEMORY(fast, slow) fast
+#else
+#define TCI_MEMORY(fast, slow) slow
+#endif
 # define qemu_ld_ub \
-    helper_ret_ldub_mmu(env, taddr, oi, (uintptr_t)tb_ptr)
+    TCI_MEMORY(tci_ld_ub, helper_ret_ldub_mmu)(env, taddr, oi, (uintptr_t)tb_ptr)
 # define qemu_ld_leuw \
-    helper_le_lduw_mmu(env, taddr, oi, (uintptr_t)tb_ptr)
+    TCI_MEMORY(tci_ld_leuw, helper_le_lduw_mmu)(env, taddr, oi, (uintptr_t)tb_ptr)
 # define qemu_ld_leul \
-    helper_le_ldul_mmu(env, taddr, oi, (uintptr_t)tb_ptr)
+    TCI_MEMORY(tci_ld_leul, helper_le_ldul_mmu)(env, taddr, oi, (uintptr_t)tb_ptr)
 # define qemu_ld_leq \
-    helper_le_ldq_mmu(env, taddr, oi, (uintptr_t)tb_ptr)
+    TCI_MEMORY(tci_ld_leq, helper_le_ldq_mmu)(env, taddr, oi, (uintptr_t)tb_ptr)
 # define qemu_ld_beuw \
-    helper_be_lduw_mmu(env, taddr, oi, (uintptr_t)tb_ptr)
+    TCI_MEMORY(tci_ld_beuw, helper_be_lduw_mmu)(env, taddr, oi, (uintptr_t)tb_ptr)
 # define qemu_ld_beul \
-    helper_be_ldul_mmu(env, taddr, oi, (uintptr_t)tb_ptr)
+    TCI_MEMORY(tci_ld_beul, helper_be_ldul_mmu)(env, taddr, oi, (uintptr_t)tb_ptr)
 # define qemu_ld_beq \
-    helper_be_ldq_mmu(env, taddr, oi, (uintptr_t)tb_ptr)
+    TCI_MEMORY(tci_ld_beq, helper_be_ldq_mmu)(env, taddr, oi, (uintptr_t)tb_ptr)
 # define qemu_st_b(X) \
-    helper_ret_stb_mmu(env, taddr, X, oi, (uintptr_t)tb_ptr)
+    TCI_MEMORY(tci_st_b, helper_ret_stb_mmu)(env, taddr, X, oi, (uintptr_t)tb_ptr)
 # define qemu_st_lew(X) \
-    helper_le_stw_mmu(env, taddr, X, oi, (uintptr_t)tb_ptr)
+    TCI_MEMORY(tci_st_lew, helper_le_stw_mmu)(env, taddr, X, oi, (uintptr_t)tb_ptr)
 # define qemu_st_lel(X) \
-    helper_le_stl_mmu(env, taddr, X, oi, (uintptr_t)tb_ptr)
+    TCI_MEMORY(tci_st_lel, helper_le_stl_mmu)(env, taddr, X, oi, (uintptr_t)tb_ptr)
 # define qemu_st_leq(X) \
-    helper_le_stq_mmu(env, taddr, X, oi, (uintptr_t)tb_ptr)
+    TCI_MEMORY(tci_st_leq, helper_le_stq_mmu)(env, taddr, X, oi, (uintptr_t)tb_ptr)
 # define qemu_st_bew(X) \
-    helper_be_stw_mmu(env, taddr, X, oi, (uintptr_t)tb_ptr)
+    TCI_MEMORY(tci_st_bew, helper_be_stw_mmu)(env, taddr, X, oi, (uintptr_t)tb_ptr)
 # define qemu_st_bel(X) \
-    helper_be_stl_mmu(env, taddr, X, oi, (uintptr_t)tb_ptr)
+    TCI_MEMORY(tci_st_bel, helper_be_stl_mmu)(env, taddr, X, oi, (uintptr_t)tb_ptr)
 # define qemu_st_beq(X) \
-    helper_be_stq_mmu(env, taddr, X, oi, (uintptr_t)tb_ptr)
+    TCI_MEMORY(tci_st_beq, helper_be_stq_mmu)(env, taddr, X, oi, (uintptr_t)tb_ptr)
 #else
 # define qemu_ld_ub      ldub_p(g2h(taddr))
 # define qemu_ld_leuw    lduw_le_p(g2h(taddr))

@@ -30,7 +30,7 @@
 #include "stdbool.h"
 #include "qemu/compiler.h"
 
-#if defined(__APPLE__) && defined(HAVE_PTHREAD_JIT_PROTECT) && (defined(__arm__) || defined(__aarch64__))
+#if !defined(CONFIG_TCG_INTERPRETER) && defined(__APPLE__) && defined(HAVE_PTHREAD_JIT_PROTECT) && (defined(__arm__) || defined(__aarch64__))
 
 // Returns the S3_6_c15_c1_5 register's value
 // Taken from
@@ -104,7 +104,7 @@ static inline void assert_executable(bool executable) {
 #endif
 
 
-#if defined(__APPLE__) && defined(HAVE_PTHREAD_JIT_PROTECT) && (defined(__arm__) || defined(__aarch64__))
+#if !defined(CONFIG_TCG_INTERPRETER) && defined(__APPLE__) && defined(HAVE_PTHREAD_JIT_PROTECT) && (defined(__arm__) || defined(__aarch64__))
 
 /* write protect enable = write disable */
 static inline void jit_write_protect(int enabled)

@@ -1019,11 +1019,16 @@ void free_code_gen_buffer(struct uc_struct *uc)
 static inline void *alloc_code_gen_buffer(struct uc_struct *uc)
 {
     TCGContext *tcg_ctx = uc->tcg_ctx;
+#ifdef CONFIG_TCG_INTERPRETER
+    /* TCI stores bytecode, so it needs ordinary writable memory, not MAP_JIT. */
+    int prot = PROT_WRITE | PROT_READ;
+#else
     int prot = PROT_WRITE | PROT_READ | PROT_EXEC;
+#endif
     int flags = MAP_PRIVATE | MAP_ANONYMOUS;
     size_t size = tcg_ctx->code_gen_buffer_size;
     void *buf;
-#ifdef USE_MAP_JIT
+#if defined(USE_MAP_JIT) && !defined(CONFIG_TCG_INTERPRETER)
     flags |= MAP_JIT;
 #endif
     buf = mmap(NULL, size, prot, flags, -1, 0);
@@ -2235,7 +2240,7 @@ void tcg_flush_softmmu_tlb(struct uc_struct *uc)
 }
 
 
-#if defined(__APPLE__) && defined(HAVE_PTHREAD_JIT_PROTECT) && (defined(__arm__) || defined(__aarch64__))
+#if !defined(CONFIG_TCG_INTERPRETER) && defined(__APPLE__) && defined(HAVE_PTHREAD_JIT_PROTECT) && (defined(__arm__) || defined(__aarch64__))
 static bool tb_exec_is_locked(struct uc_struct *uc)
 {
     return uc->current_executable;
