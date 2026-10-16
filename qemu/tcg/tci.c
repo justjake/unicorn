@@ -609,6 +609,13 @@ uintptr_t tcg_qemu_tb_exec(CPUArchState *env, uint8_t *tb_ptr)
                     args[arg++] = value;
                 }
                 tmp64 = ((helper_function)t0)(args);
+                if (unlikely(env->uc->tci_return_pending)) {
+                    env->uc->tci_return_pending = false;
+                    // Zero is a valid unchained return: no successor TB and
+                    // no second PC synchronization after the helper's restore.
+                    ret = 0;
+                    goto exit;
+                }
                 tci_write_reg(regs, TCG_REG_R0, tmp64);
                 tci_write_reg(regs, TCG_REG_R1, tmp64 >> 32);
             }

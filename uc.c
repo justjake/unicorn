@@ -1261,6 +1261,7 @@ uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
 UNICORN_EXPORT
 uc_err uc_emu_stop(uc_engine *uc)
 {
+    uc->embedder_exit_counters[UC_EXIT_STOP_REQUEST]++;
     UC_INIT(uc);
     uc->stop_request = true;
     uc_err err = break_translation_loop(uc);
@@ -3206,6 +3207,7 @@ uc_err uc_embedder_set_insn_filter(uc_engine *uc,
 UNICORN_EXPORT
 uc_err uc_embedder_retry_block(uc_engine *uc, uint32_t limit)
 {
+    uc->embedder_exit_counters[UC_EXIT_RETRY_REQUEST]++;
     uc->embedder_retry_limit = limit;
     return UC_ERR_OK;
 }
@@ -3215,6 +3217,7 @@ uc_err uc_embedder_retry_block(uc_engine *uc, uint32_t limit)
 UNICORN_EXPORT
 uc_err uc_embedder_request_restart(uc_engine *uc)
 {
+    uc->embedder_exit_counters[UC_EXIT_RESTART_REQUEST]++;
     uc->embedder_restart_request = true;
     return UC_ERR_OK;
 }
@@ -3236,4 +3239,11 @@ UNICORN_EXPORT
 void *uc_embedder_accounting(uc_engine *uc)
 {
     return &uc->embedder_acct;
+}
+
+// Host-only cumulative counters; read while no emulation runs. See uc_priv.h.
+UNICORN_EXPORT
+const uint64_t *uc_embedder_exit_counters(uc_engine *uc)
+{
+    return uc->embedder_exit_counters;
 }

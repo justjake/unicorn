@@ -175,14 +175,37 @@ void HELPER(check_exit_request)(void *p, uint32_t in_delay_slot) {
         uc->embedder_retry_limit = 0;
         if (!cpu_loop_exit_requested(uc->cpu) && !in_delay_slot) {
             uc->cpu->cflags_next_tb = curr_cflags() | (limit & CF_COUNT_MASK);
+#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
+            cpu_restore_state(uc->cpu, GETPC(), true);
+            uc->embedder_exit_counters[UC_EXIT_NORMAL_RETRY]++;
+            uc->tci_return_pending = true;
+            return;
+#else
+            uc->embedder_exit_site = UC_EXIT_RETRY_JUMP;
             if (uc->nested_level == 1) {
                 tb_exec_unlock(uc);
             }
             cpu_loop_exit_restore(uc->cpu, GETPC());
+#endif
         }
     }
 
     if (cpu_loop_exit_requested(uc->cpu) && !in_delay_slot) {
+#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
+        // A hook check precedes a guest instruction (possibly within a TB).
+        // Restore precisely the same PC as the jump path, then let the interpreter
+        // unwind normally through cpu_tb_exec (including its I/O/JIT cleanup).
+        // Return unchained: a code-hook PC write must not be overwritten by
+        // synchronize_from_tb, and a retry must not trigger icount refill.
+        if (!uc->skip_sync_pc_on_exit) {
+            cpu_restore_state(uc->cpu, GETPC(), true);
+        }
+        uc->skip_sync_pc_on_exit = false;
+        uc->cpu->tcg_exit_req = 0;
+        uc->embedder_exit_counters[UC_EXIT_NORMAL_CHECK]++;
+        uc->tci_return_pending = true;
+        return;
+#else
         // There are stil something we have to before exiting to be compatible with previous behaviors
 
         // from cpu_tb_exec
@@ -193,10 +216,13 @@ void HELPER(check_exit_request)(void *p, uint32_t in_delay_slot) {
         uc->cpu->tcg_exit_req = 0;
 
         if (uc->skip_sync_pc_on_exit) {
+            uc->embedder_exit_site = UC_EXIT_CHECK_NO_SYNC;
             uc->skip_sync_pc_on_exit = false;
             cpu_loop_exit(uc->cpu);
         } else {
+            uc->embedder_exit_site = UC_EXIT_CHECK_RESTORE;
             cpu_loop_exit_restore(uc->cpu, GETPC());
         }
+#endif
     }
 }

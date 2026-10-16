@@ -270,6 +270,14 @@ static inline bool _hook_exists_bounded(struct list_item *cur, uint64_t addr)
 typedef struct TargetPageBits TargetPageBits;
 typedef struct TCGContext TCGContext;
 
+// Host diagnostics ABI, shared with camera_native Machine.exit_counters.
+enum uc_embedder_exit_counter {
+    UC_EXIT_DIRECT, UC_EXIT_RESTORE, UC_EXIT_NOEXC, UC_EXIT_ATOMIC,
+    UC_EXIT_CHECK_RESTORE, UC_EXIT_CHECK_NO_SYNC, UC_EXIT_RETRY_JUMP,
+    UC_EXIT_RESTART_REQUEST, UC_EXIT_RETRY_REQUEST, UC_EXIT_STOP_REQUEST,
+    UC_EXIT_NORMAL_CHECK, UC_EXIT_NORMAL_RETRY, UC_EXIT_COUNTER_COUNT
+};
+
 struct uc_struct {
     uc_arch arch;
     uc_mode mode;
@@ -467,6 +475,12 @@ struct uc_struct {
         uint64_t mask;
         uint64_t enabled;
     } embedder_acct;
+    // Observational host counters, never serialized in a CPU context. Entries
+    // 0..6 are actual jumps by call site; 7..9 are request origins; 10..11
+    // count normal TCI returns replacing the check-exit/retry jumps.
+    uint64_t embedder_exit_counters[UC_EXIT_COUNTER_COUNT];
+    unsigned embedder_exit_site;
+    bool tci_return_pending; // Emscripten TCI helper asks for an unchained return
 };
 
 // Metadata stub for the variable-size cpu context used with uc_context_*()

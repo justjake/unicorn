@@ -26,6 +26,7 @@
 /* exit the current TB, but without causing any exception to be raised */
 void cpu_loop_exit_noexc(CPUState *cpu)
 {
+    cpu->uc->embedder_exit_site = UC_EXIT_NOEXC;
     cpu->exception_index = -1;
     cpu_loop_exit(cpu);
 }
@@ -36,6 +37,8 @@ void cpu_reloading_memory_map(void)
 
 void cpu_loop_exit(CPUState *cpu)
 {
+    cpu->uc->embedder_exit_counters[cpu->uc->embedder_exit_site]++;
+    cpu->uc->embedder_exit_site = UC_EXIT_DIRECT;
     /* Unlock JIT write protect if applicable. */
     if (cpu->uc->nested_level == 1) {
         tb_exec_unlock(cpu->uc);
@@ -47,6 +50,9 @@ void cpu_loop_exit(CPUState *cpu)
 
 void cpu_loop_exit_restore(CPUState *cpu, uintptr_t pc)
 {
+    if (!cpu->uc->embedder_exit_site) {
+        cpu->uc->embedder_exit_site = UC_EXIT_RESTORE;
+    }
     if (pc) {
         cpu_restore_state(cpu, pc, true);
     }
@@ -55,6 +61,7 @@ void cpu_loop_exit_restore(CPUState *cpu, uintptr_t pc)
 
 void cpu_loop_exit_atomic(CPUState *cpu, uintptr_t pc)
 {
+    cpu->uc->embedder_exit_site = UC_EXIT_ATOMIC;
     cpu->exception_index = EXCP_ATOMIC;
     cpu_loop_exit_restore(cpu, pc);
 }
