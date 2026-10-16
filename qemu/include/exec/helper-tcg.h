@@ -6,7 +6,7 @@
 
 #include "exec/helper-head.h"
 
-#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
+#if defined(CONFIG_TCG_INTERPRETER)
 #define dh_tci_wrapper(name) .tci_wrapper = glue(tci_helper_, name),
 #else
 #define dh_tci_wrapper(name)

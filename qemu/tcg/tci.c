@@ -46,20 +46,7 @@ _Thread_local uintptr_t tci_tb_ptr;
 #if MAX_OPC_PARAM_IARGS != 6
 # error Fix needed, number of supported input arguments changed!
 #endif
-#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
 typedef uint64_t (*helper_function)(const uint64_t *args);
-#elif TCG_TARGET_REG_BITS == 32
-typedef uint64_t (*helper_function)(tcg_target_ulong, tcg_target_ulong,
-                                    tcg_target_ulong, tcg_target_ulong,
-                                    tcg_target_ulong, tcg_target_ulong,
-                                    tcg_target_ulong, tcg_target_ulong,
-                                    tcg_target_ulong, tcg_target_ulong,
-                                    tcg_target_ulong, tcg_target_ulong);
-#else
-typedef uint64_t (*helper_function)(tcg_target_ulong, tcg_target_ulong,
-                                    tcg_target_ulong, tcg_target_ulong,
-                                    tcg_target_ulong, tcg_target_ulong);
-#endif
 
 static tcg_target_ulong tci_read_reg(const tcg_target_ulong *regs, TCGReg index)
 {
@@ -587,24 +574,33 @@ uintptr_t tcg_qemu_tb_exec(CPUArchState *env, uint8_t *tb_ptr)
         switch (opc) {
         case INDEX_op_call:
             t0 = tci_read_ri(regs, &tb_ptr);
-#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
             {
                 uint32_t words = tci_read_i32(&tb_ptr);
                 uint32_t sizemask = tci_read_i32(&tb_ptr);
+                (void)sizemask; // Native 64-bit TCI has no split argument words.
                 static const uint8_t call_regs[] = {
                     TCG_REG_R0, TCG_REG_R1, TCG_REG_R2, TCG_REG_R3,
-                    TCG_REG_R5, TCG_REG_R6, TCG_REG_R7, TCG_REG_R8,
+                    TCG_REG_R5, TCG_REG_R6,
+#if TCG_TARGET_REG_BITS == 32
+                    TCG_REG_R7, TCG_REG_R8,
                     TCG_REG_R9, TCG_REG_R10, TCG_REG_R11, TCG_REG_R12
+#endif
                 };
                 uint64_t args[MAX_OPC_PARAM_IARGS];
                 unsigned word = 0, arg = 0;
                 tci_assert(words <= ARRAY_SIZE(call_regs));
                 while (word < words) {
                     uint64_t value = tci_read_reg(regs, call_regs[word++]);
+#if TCG_TARGET_REG_BITS == 32
                     if ((sizemask >> (2 * (arg + 1))) & 1) {
                         tci_assert(word < words);
+#ifdef HOST_WORDS_BIGENDIAN
+                        value = (value << 32) | tci_read_reg(regs, call_regs[word++]);
+#else
                         value |= (uint64_t)tci_read_reg(regs, call_regs[word++]) << 32;
+#endif
                     }
+#endif
                     tci_assert(arg < ARRAY_SIZE(args));
                     args[arg++] = value;
                 }
@@ -617,32 +613,17 @@ uintptr_t tcg_qemu_tb_exec(CPUArchState *env, uint8_t *tb_ptr)
                     goto exit;
                 }
                 tci_write_reg(regs, TCG_REG_R0, tmp64);
-                tci_write_reg(regs, TCG_REG_R1, tmp64 >> 32);
-            }
-#elif TCG_TARGET_REG_BITS == 32
-            tmp64 = ((helper_function)t0)(tci_read_reg(regs, TCG_REG_R0),
-                                          tci_read_reg(regs, TCG_REG_R1),
-                                          tci_read_reg(regs, TCG_REG_R2),
-                                          tci_read_reg(regs, TCG_REG_R3),
-                                          tci_read_reg(regs, TCG_REG_R5),
-                                          tci_read_reg(regs, TCG_REG_R6),
-                                          tci_read_reg(regs, TCG_REG_R7),
-                                          tci_read_reg(regs, TCG_REG_R8),
-                                          tci_read_reg(regs, TCG_REG_R9),
-                                          tci_read_reg(regs, TCG_REG_R10),
-                                          tci_read_reg(regs, TCG_REG_R11),
-                                          tci_read_reg(regs, TCG_REG_R12));
-            tci_write_reg(regs, TCG_REG_R0, tmp64);
-            tci_write_reg(regs, TCG_REG_R1, tmp64 >> 32);
+#if TCG_TARGET_REG_BITS == 32
+#ifdef HOST_WORDS_BIGENDIAN
+                if (sizemask & 1) {
+                    tci_write_reg(regs, TCG_REG_R0, tmp64 >> 32);
+                    tci_write_reg(regs, TCG_REG_R1, tmp64);
+                }
 #else
-            tmp64 = ((helper_function)t0)(tci_read_reg(regs, TCG_REG_R0),
-                                          tci_read_reg(regs, TCG_REG_R1),
-                                          tci_read_reg(regs, TCG_REG_R2),
-                                          tci_read_reg(regs, TCG_REG_R3),
-                                          tci_read_reg(regs, TCG_REG_R5),
-                                          tci_read_reg(regs, TCG_REG_R6));
-            tci_write_reg(regs, TCG_REG_R0, tmp64);
+                tci_write_reg(regs, TCG_REG_R1, tmp64 >> 32);
 #endif
+#endif
+            }
             break;
         case INDEX_op_br:
             label = tci_read_label(&tb_ptr);

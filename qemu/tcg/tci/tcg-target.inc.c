@@ -547,7 +547,7 @@ static void tcg_out_movi(TCGContext *s, TCGType type,
 }
 
 static inline void tcg_out_call(TCGContext *s, tcg_insn_unit *arg
-#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
+#if defined(CONFIG_TCG_INTERPRETER)
                                 , int words, unsigned sizemask
 #endif
                                 )
@@ -555,7 +555,7 @@ static inline void tcg_out_call(TCGContext *s, tcg_insn_unit *arg
     uint8_t *old_code_ptr = s->code_ptr;
     tcg_out_op_t(s, INDEX_op_call);
     tcg_out_ri(s, 1, (uintptr_t)arg);
-#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
+#if defined(CONFIG_TCG_INTERPRETER)
     /* The target is a typed uniform wrapper; retain argument packing metadata. */
     tcg_out32(s, words);
     tcg_out32(s, sizemask);

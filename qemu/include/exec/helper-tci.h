@@ -1,5 +1,5 @@
-/* Typed helper dispatch for Emscripten TCI. Every generated function has
- * the same Wasm signature and makes a statically typed call to its helper. */
+/* Typed helper dispatch for TCI. Every generated function has
+ * the same C signature and makes a statically typed call to its helper. */
 #ifndef EXEC_HELPER_TCI_H
 #define EXEC_HELPER_TCI_H
 

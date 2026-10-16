@@ -262,6 +262,6 @@ DEF_HELPER_FLAGS_5(gvec_bitsel, TCG_CALL_NO_RWG, void, ptr, ptr, ptr, ptr, i32)
 
 DEF_HELPER_2(check_exit_request, void, ptr, i32)
 
-#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
+#if defined(CONFIG_TCG_INTERPRETER)
 DEF_HELPER_5(tci_hookcode, void, ptr, ptr, i64, i32, ptr)
 #endif

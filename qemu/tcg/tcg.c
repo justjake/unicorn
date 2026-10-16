@@ -146,7 +146,7 @@ static void tcg_out_st(TCGContext *s, TCGType type, TCGReg arg, TCGReg arg1,
                        intptr_t arg2);
 static bool tcg_out_sti(TCGContext *s, TCGType type, TCGArg val,
                         TCGReg base, intptr_t ofs);
-#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
+#if defined(CONFIG_TCG_INTERPRETER)
 static void tcg_out_call(TCGContext *s, tcg_insn_unit *target, int words, unsigned sizemask);
 #else
 static void tcg_out_call(TCGContext *s, tcg_insn_unit *target);
@@ -656,13 +656,13 @@ typedef struct TCGHelperInfo {
     const char *name;
     unsigned flags;
     unsigned sizemask;
-#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
+#if defined(CONFIG_TCG_INTERPRETER)
     uint64_t (*tci_wrapper)(const uint64_t *args);
 #endif
 } TCGHelperInfo;
 
 #include "exec/helper-proto.h"
-#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
+#if defined(CONFIG_TCG_INTERPRETER)
 /* Dynamic inline callbacks have the declared hookcode prototype. Give them
  * the same generated-wrapper path instead of casting them to a helper ABI. */
 void HELPER(tci_hookcode)(void *callback, void *uc, uint64_t address,
@@ -690,7 +690,7 @@ static TCGTemp *tcg_global_reg_new_internal(TCGContext *s, TCGType type,
 
 void uc_add_inline_hook(uc_engine *uc, struct hook *hk, void** args, int args_len)
 {
-#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
+#if defined(CONFIG_TCG_INTERPRETER)
     TCGContext *tcg_ctx = uc->tcg_ctx;
     g_assert(args_len == 4);
     TCGv_ptr callback = tcg_const_ptr(tcg_ctx, hk->callback);
@@ -3699,7 +3699,7 @@ static void tcg_reg_alloc_call(TCGContext *s, TCGOp *op)
         save_globals(s, allocated_regs);
     }
 
-#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
+#if defined(CONFIG_TCG_INTERPRETER)
     TCGHelperInfo *info = g_hash_table_lookup(s->helper_table, func_addr);
     tcg_out_call(s, (tcg_insn_unit *)info->tci_wrapper, nb_iargs, info->sizemask);
 #else

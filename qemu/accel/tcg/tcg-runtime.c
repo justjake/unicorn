@@ -175,7 +175,7 @@ void HELPER(check_exit_request)(void *p, uint32_t in_delay_slot) {
         uc->embedder_retry_limit = 0;
         if (!cpu_loop_exit_requested(uc->cpu) && !in_delay_slot) {
             uc->cpu->cflags_next_tb = curr_cflags() | (limit & CF_COUNT_MASK);
-#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
+#if defined(CONFIG_TCG_INTERPRETER)
             cpu_restore_state(uc->cpu, GETPC(), true);
             uc->embedder_exit_counters[UC_EXIT_NORMAL_RETRY]++;
             uc->tci_return_pending = true;
@@ -191,7 +191,7 @@ void HELPER(check_exit_request)(void *p, uint32_t in_delay_slot) {
     }
 
     if (cpu_loop_exit_requested(uc->cpu) && !in_delay_slot) {
-#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
+#if defined(CONFIG_TCG_INTERPRETER)
         // A hook check precedes a guest instruction (possibly within a TB).
         // Restore precisely the same PC as the jump path, then let the interpreter
         // unwind normally through cpu_tb_exec (including its I/O/JIT cleanup).

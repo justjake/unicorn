@@ -480,7 +480,7 @@ struct uc_struct {
     // count normal TCI returns replacing the check-exit/retry jumps.
     uint64_t embedder_exit_counters[UC_EXIT_COUNTER_COUNT];
     unsigned embedder_exit_site;
-    bool tci_return_pending; // Emscripten TCI helper asks for an unchained return
+    bool tci_return_pending; // TCI helper asks for an unchained return
 };
 
 // Metadata stub for the variable-size cpu context used with uc_context_*()
