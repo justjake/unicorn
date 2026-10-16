@@ -4,6 +4,9 @@
 #ifndef UNICORN_ARCH_POSTFIX
 #define UNICORN_ARCH_POSTFIX _s390x
 #endif
+#define tcg_qemu_tb_exec tcg_qemu_tb_exec_s390x
+#define tci_tb_ptr tci_tb_ptr_s390x
+#define tci_disas tci_disas_s390x
 #define gen_helper_check_exit_request gen_helper_check_exit_request_s390x
 #define unicorn_fill_tlb unicorn_fill_tlb_s390x
 #define reg_read reg_read_s390x

@@ -4,6 +4,9 @@ CMD_PATH=$(realpath $0)
 SOURCE_DIR=$(dirname ${CMD_PATH})
 
 COMMON_SYMBOLS="
+tcg_qemu_tb_exec \
+tci_tb_ptr \
+tci_disas \
 gen_helper_check_exit_request \
 unicorn_fill_tlb \
 reg_read \

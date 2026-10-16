@@ -4,6 +4,9 @@
 #ifndef UNICORN_ARCH_POSTFIX
 #define UNICORN_ARCH_POSTFIX _riscv32
 #endif
+#define tcg_qemu_tb_exec tcg_qemu_tb_exec_riscv32
+#define tci_tb_ptr tci_tb_ptr_riscv32
+#define tci_disas tci_disas_riscv32
 #define gen_helper_check_exit_request gen_helper_check_exit_request_riscv32
 #define unicorn_fill_tlb unicorn_fill_tlb_riscv32
 #define reg_read reg_read_riscv32
