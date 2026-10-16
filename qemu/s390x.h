@@ -6,7 +6,7 @@
 #endif
 #define tcg_qemu_tb_exec tcg_qemu_tb_exec_s390x
 #define tci_tb_ptr tci_tb_ptr_s390x
-#define tci_call_helper tci_call_helper_s390x
+#define helper_tci_hookcode helper_tci_hookcode_s390x
 #define tci_disas tci_disas_s390x
 #define gen_helper_check_exit_request gen_helper_check_exit_request_s390x
 #define unicorn_fill_tlb unicorn_fill_tlb_s390x

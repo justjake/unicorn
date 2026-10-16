@@ -35,30 +35,6 @@
 
 _Thread_local uintptr_t tci_tb_ptr;
 
-#ifdef __EMSCRIPTEN__
-#include <emscripten.h>
-/* The original TCI casts every helper to one twelve-word prototype. Wasm
- * rejects those calls. JS calls the same table entry with the declared
- * signature, reconstructing i64 parameters from TCI's 32-bit register pairs.
- * This stays local to the interpreter; the CPython/Rust ABI is unchanged. */
-EM_JS(uint64_t, tci_call_helper,
-      (uintptr_t target, const uint32_t *regs, unsigned words, unsigned sizemask), {
-    const indices = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12];
-    const args = [];
-    for (let arg = 1, word = 0; word < words; arg++) {
-        const lo = HEAPU32[(regs >>> 2) + indices[word++]];
-        if ((sizemask >>> (2 * arg)) & 1) {
-            const hi = HEAPU32[(regs >>> 2) + indices[word++]];
-            args.push(BigInt.asIntN(64, (BigInt(hi) << 32n) | BigInt(lo)));
-        } else {
-            args.push(lo);
-        }
-    }
-    const result = wasmTable.get(target)(...args);
-    return typeof result === 'bigint' ? result : BigInt((result ?? 0) >>> 0);
-});
-#endif
-
 /* Marker for missing code. */
 #define TODO() \
     do { \
@@ -70,7 +46,9 @@ EM_JS(uint64_t, tci_call_helper,
 #if MAX_OPC_PARAM_IARGS != 6
 # error Fix needed, number of supported input arguments changed!
 #endif
-#if TCG_TARGET_REG_BITS == 32
+#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
+typedef uint64_t (*helper_function)(const uint64_t *args);
+#elif TCG_TARGET_REG_BITS == 32
 typedef uint64_t (*helper_function)(tcg_target_ulong, tcg_target_ulong,
                                     tcg_target_ulong, tcg_target_ulong,
                                     tcg_target_ulong, tcg_target_ulong,
@@ -609,11 +587,28 @@ uintptr_t tcg_qemu_tb_exec(CPUArchState *env, uint8_t *tb_ptr)
         switch (opc) {
         case INDEX_op_call:
             t0 = tci_read_ri(regs, &tb_ptr);
-#ifdef __EMSCRIPTEN__
+#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
             {
                 uint32_t words = tci_read_i32(&tb_ptr);
                 uint32_t sizemask = tci_read_i32(&tb_ptr);
-                tmp64 = tci_call_helper(t0, regs, words, sizemask);
+                static const uint8_t call_regs[] = {
+                    TCG_REG_R0, TCG_REG_R1, TCG_REG_R2, TCG_REG_R3,
+                    TCG_REG_R5, TCG_REG_R6, TCG_REG_R7, TCG_REG_R8,
+                    TCG_REG_R9, TCG_REG_R10, TCG_REG_R11, TCG_REG_R12
+                };
+                uint64_t args[MAX_OPC_PARAM_IARGS];
+                unsigned word = 0, arg = 0;
+                tci_assert(words <= ARRAY_SIZE(call_regs));
+                while (word < words) {
+                    uint64_t value = tci_read_reg(regs, call_regs[word++]);
+                    if ((sizemask >> (2 * (arg + 1))) & 1) {
+                        tci_assert(word < words);
+                        value |= (uint64_t)tci_read_reg(regs, call_regs[word++]) << 32;
+                    }
+                    tci_assert(arg < ARRAY_SIZE(args));
+                    args[arg++] = value;
+                }
+                tmp64 = ((helper_function)t0)(args);
                 tci_write_reg(regs, TCG_REG_R0, tmp64);
                 tci_write_reg(regs, TCG_REG_R1, tmp64 >> 32);
             }

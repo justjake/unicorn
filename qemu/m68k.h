@@ -6,7 +6,7 @@
 #endif
 #define tcg_qemu_tb_exec tcg_qemu_tb_exec_m68k
 #define tci_tb_ptr tci_tb_ptr_m68k
-#define tci_call_helper tci_call_helper_m68k
+#define helper_tci_hookcode helper_tci_hookcode_m68k
 #define tci_disas tci_disas_m68k
 #define gen_helper_check_exit_request gen_helper_check_exit_request_m68k
 #define unicorn_fill_tlb unicorn_fill_tlb_m68k

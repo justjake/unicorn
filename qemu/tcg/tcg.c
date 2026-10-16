@@ -146,7 +146,7 @@ static void tcg_out_st(TCGContext *s, TCGType type, TCGReg arg, TCGReg arg1,
                        intptr_t arg2);
 static bool tcg_out_sti(TCGContext *s, TCGType type, TCGArg val,
                         TCGReg base, intptr_t ofs);
-#ifdef __EMSCRIPTEN__
+#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
 static void tcg_out_call(TCGContext *s, tcg_insn_unit *target, int words, unsigned sizemask);
 #else
 static void tcg_out_call(TCGContext *s, tcg_insn_unit *target);
@@ -656,9 +656,22 @@ typedef struct TCGHelperInfo {
     const char *name;
     unsigned flags;
     unsigned sizemask;
+#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
+    uint64_t (*tci_wrapper)(const uint64_t *args);
+#endif
 } TCGHelperInfo;
 
 #include "exec/helper-proto.h"
+#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
+/* Dynamic inline callbacks have the declared hookcode prototype. Give them
+ * the same generated-wrapper path instead of casting them to a helper ABI. */
+void HELPER(tci_hookcode)(void *callback, void *uc, uint64_t address,
+                          uint32_t size, void *user_data)
+{
+    ((uc_cb_hookcode_t)callback)(uc, address, size, user_data);
+}
+#include "exec/helper-tci.h"
+#endif
 
 static const TCGHelperInfo all_helpers[] = {
 #include "exec/helper-tcg.h"
@@ -677,6 +690,15 @@ static TCGTemp *tcg_global_reg_new_internal(TCGContext *s, TCGType type,
 
 void uc_add_inline_hook(uc_engine *uc, struct hook *hk, void** args, int args_len)
 {
+#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
+    TCGContext *tcg_ctx = uc->tcg_ctx;
+    g_assert(args_len == 4);
+    TCGv_ptr callback = tcg_const_ptr(tcg_ctx, hk->callback);
+    TCGTemp *hook_args[] = { tcgv_ptr_temp(tcg_ctx, callback),
+                            args[0], args[1], args[2], args[3] };
+    tcg_gen_callN(tcg_ctx, HELPER(tci_hookcode), NULL, 5, hook_args);
+    tcg_temp_free_ptr(tcg_ctx, callback);
+#else
     TCGHelperInfo* info = g_malloc(sizeof(TCGHelperInfo));
     char *name = g_malloc(64);
     unsigned sizemask = 0xFFFFFFFF;
@@ -708,6 +730,7 @@ void uc_add_inline_hook(uc_engine *uc, struct hook *hk, void** args, int args_le
     g_hash_table_insert(uc->tcg_ctx->custom_helper_infos, (gpointer)info->func, (gpointer)info);
 
     tcg_gen_callN(tcg_ctx, info->func, NULL, args_len, (TCGTemp**)args);
+#endif
 }
 
 static void uc_free_inline_hook_info(void *p)
@@ -3676,9 +3699,9 @@ static void tcg_reg_alloc_call(TCGContext *s, TCGOp *op)
         save_globals(s, allocated_regs);
     }
 
-#ifdef __EMSCRIPTEN__
+#if defined(__EMSCRIPTEN__) && defined(CONFIG_TCG_INTERPRETER)
     TCGHelperInfo *info = g_hash_table_lookup(s->helper_table, func_addr);
-    tcg_out_call(s, func_addr, nb_iargs, info->sizemask);
+    tcg_out_call(s, (tcg_insn_unit *)info->tci_wrapper, nb_iargs, info->sizemask);
 #else
     tcg_out_call(s, func_addr);
 #endif

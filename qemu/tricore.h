@@ -6,7 +6,7 @@
 #endif
 #define tcg_qemu_tb_exec tcg_qemu_tb_exec_tricore
 #define tci_tb_ptr tci_tb_ptr_tricore
-#define tci_call_helper tci_call_helper_tricore
+#define helper_tci_hookcode helper_tci_hookcode_tricore
 #define tci_disas tci_disas_tricore
 #define gen_helper_check_exit_request gen_helper_check_exit_request_tricore
 #define unicorn_fill_tlb unicorn_fill_tlb_tricore

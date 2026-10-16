@@ -6,7 +6,7 @@ SOURCE_DIR=$(dirname ${CMD_PATH})
 COMMON_SYMBOLS="
 tcg_qemu_tb_exec \
 tci_tb_ptr \
-tci_call_helper \
+helper_tci_hookcode \
 tci_disas \
 gen_helper_check_exit_request \
 unicorn_fill_tlb \

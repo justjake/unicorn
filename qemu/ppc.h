@@ -6,7 +6,7 @@
 #endif
 #define tcg_qemu_tb_exec tcg_qemu_tb_exec_ppc
 #define tci_tb_ptr tci_tb_ptr_ppc
-#define tci_call_helper tci_call_helper_ppc
+#define helper_tci_hookcode helper_tci_hookcode_ppc
 #define tci_disas tci_disas_ppc
 #define gen_helper_check_exit_request gen_helper_check_exit_request_ppc
 #define unicorn_fill_tlb unicorn_fill_tlb_ppc
