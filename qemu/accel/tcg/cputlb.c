@@ -914,6 +914,15 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
     if (is_ram) {
         /* RAM and ROMD both have associated host memory. */
         addend = (uintptr_t)memory_region_get_ram_ptr(section->mr) + xlat;
+        /* Observe the actual backing pointer, including CPU aliases/TCM.
+           A TLB refill records a conservative superset of accessed bytes,
+           without adding a callback to individual RAM loads/stores. */
+        if (cpu->uc->embedder_observed_pages &&
+            addend >= cpu->uc->embedder_observed_base &&
+            addend - cpu->uc->embedder_observed_base < cpu->uc->embedder_observed_size) {
+            size_t page = (addend - cpu->uc->embedder_observed_base) >> cpu->uc->embedder_observed_shift;
+            cpu->uc->embedder_observed_pages[page >> 6] |= UINT64_C(1) << (page & 63);
+        }
     } else {
         /* I/O does not; force the host address to NULL. */
         addend = 0;

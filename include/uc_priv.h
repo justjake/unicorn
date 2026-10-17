@@ -445,6 +445,12 @@ struct uc_struct {
     bool embedder_write_hook_no_pc_sync;
     // embedder: memory hooks take the slow path only on pages a hook range covers
     bool embedder_page_hooks;
+    /* Optional host-range observation, one bit per embedder-selected page.
+       Set on TLB fill; never changes guest permissions or execution. */
+    uintptr_t embedder_observed_base;
+    size_t embedder_observed_size;
+    uint64_t *embedder_observed_pages;
+    unsigned embedder_observed_shift;
     // embedder: one bit per 1 KiB physical page whose stores reach embedder_watched
     // write hooks from the TLB fast path's slow path
     uint8_t *embedder_watch;

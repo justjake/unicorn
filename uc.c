@@ -3114,6 +3114,22 @@ uc_err uc_embedder_set_page_hooks(uc_engine *uc, bool enabled)
     return UC_ERR_OK;
 }
 
+UNICORN_EXPORT
+uc_err uc_embedder_observe_host_pages(uc_engine *uc, uintptr_t base, size_t size,
+                                     uint64_t *pages, unsigned shift)
+{
+    if (!base || !size || !pages || shift < 12 || shift > 20 || base > UINTPTR_MAX - size)
+        return UC_ERR_ARG;
+    UC_INIT(uc);
+    uc->embedder_observed_base = base;
+    uc->embedder_observed_size = size;
+    uc->embedder_observed_pages = pages;
+    uc->embedder_observed_shift = shift;
+    uc->tcg_flush_tlb(uc);
+    restore_jit_state(uc);
+    return UC_ERR_OK;
+}
+
 // embedder: a watched write hook (embedder_page_hooks mode) slows down and sees fast-path
 // stores only on watched pages; slow-path stores elsewhere still reach it.
 UNICORN_EXPORT
