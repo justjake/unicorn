@@ -24,6 +24,31 @@ Unicorn offers some unparalleled features:
 
 Further information is available at http://www.unicorn-engine.org
 
+Embedder extensions in this fork
+-------------------------------
+
+This fork builds on Unicorn 2.1.4 with extensions for reducing instrumentation
+overhead and running the translation engine without a host JIT:
+
+- Page-scoped memory hooks and explicit physical-page watches.
+- ARM translation-time instruction filtering, bounded block retries and
+  instruction restarts at memory-hook boundaries.
+- Budgeted block accounting with an embedder-owned trace ring.
+- Observation of mapped host-memory pages during TLB fills.
+- An optional Tiny Code Interpreter (TCI) backend, including Emscripten support.
+
+Extension exports use the `uc_embedder_` namespace. Their implementation and
+contracts are in `uc.c` and `include/uc_priv.h`; these are experimental extensions
+to the upstream API. Existing upstream project information follows below.
+
+The host JIT remains the default. To build the ARM interpreter backend:
+
+```sh
+cmake -S . -B build -G Ninja -DUNICORN_ARCH=arm -DUNICORN_TCG_INTERPRETER=ON
+cmake --build build
+ctest --test-dir build -R '^test_arm$' --output-on-failure
+```
+
 
 License
 -------
