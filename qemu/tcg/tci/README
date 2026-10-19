@@ -1,0 +1,49 @@
+Tiny Code Interpreter
+====================
+
+This backend emits and interprets packed 32-bit instructions. Each instruction
+contains an 8-bit opcode and up to six 4-bit register operands. Branches and
+constant-pool references use signed 20-bit byte displacements from the following
+instruction. Large constants and helper descriptors are pooled after the code.
+
+The emitter, interpreter and matching debug disassembler are adapted from QEMU
+v6.2.0:
+  https://gitlab.com/qemu-project/qemu/-/tree/v6.2.0/tcg
+
+The packed encoding was introduced by Richard Henderson in:
+  650898891837a9772a5410e73c637a55d99e1e50
+  "tcg/tci: Change encoding to uint32_t units"
+
+The store emitter also includes the out-of-range offset handling from:
+  2ccf40f00e3f29d85d4ff48a9a98870059002290
+  "tcg/tci: Use tcg_out_ldst in tcg_out_st"
+
+Integration with the QEMU 5 translation core
+------------------------------------------
+
+The target supplies the older per-op constraint interface and bswap semantics.
+Register 13 is reserved for emitter temporaries; register 14 holds the CPU
+environment and register 15 points above the spill frame. goto_tb uses indirect
+chaining. goto_ptr can return through the emitted exit epilogue.
+
+Helper calls retain the uniform uint64_t wrapper ABI in exec/helper-tci.h.
+Arguments use the existing call-register order, with i64 values split into two
+words on 32-bit hosts. Each call's pool entry holds the wrapper pointer followed
+by its word count in bits 0..7 and argument/return size mask in bits 8 and above.
+Only return registers are clobbered by a wrapper. This integration does not use
+libffi.
+
+The interpreter maintains the current bytecode return address for architectural
+state restoration. A helper's normal exit stops the interpreter before another
+bytecode operation executes. Guest loads and stores retain the no-flags TLB
+fast path, with the existing helpers handling intercepted, MMIO, dirty, code,
+unaligned and missing mappings.
+
+Validation
+----------
+
+The ARM test target covers architectural behavior and hooks. test_tci adds
+constant-pool loads, integer arithmetic, conditional branches, signed and
+doubleword memory accesses, and floating-point helpers with 64-bit arguments
+and results. Run both on native and wasm32 builds: wasm32 exercises split
+helper arguments and paired registers that native 64-bit builds do not use.

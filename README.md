@@ -39,6 +39,13 @@ overhead and running the translation engine without a host JIT:
   instructions whose condition fails (`uc_embedder_features()` bit 4).
 - An optional Tiny Code Interpreter (TCI) backend, including Emscripten support.
 
+TCI uses the packed 32-bit bytecode emitter and interpreter adapted from QEMU
+6.2.0, including constant pools and the additional integer operations. Typed
+helper wrappers retain the same ABI on native and WebAssembly hosts. The
+backport retains the embedder's memory interception and normal helper exits.
+See [the backend notes](qemu/tcg/tci/README) for provenance and implementation
+details.
+
 Extension exports use the `uc_embedder_` namespace. Their implementation and
 contracts are in `uc.c` and `include/uc_priv.h`; these are experimental extensions
 to the upstream API. Existing upstream project information follows below.
@@ -48,7 +55,7 @@ The host JIT remains the default. To build the ARM interpreter backend:
 ```sh
 cmake -S . -B build -G Ninja -DUNICORN_ARCH=arm -DUNICORN_TCG_INTERPRETER=ON
 cmake --build build
-ctest --test-dir build -R '^test_arm$' --output-on-failure
+ctest --test-dir build -R '^(test_arm|test_tci)$' --output-on-failure
 ```
 
 

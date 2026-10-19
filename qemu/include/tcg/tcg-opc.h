@@ -292,6 +292,12 @@ DEF(cmpsel_vec, 1, 4, 1, IMPLVEC | IMPL(TCG_TARGET_HAS_cmpsel_vec))
 
 DEF(last_generic, 0, 0, 0, TCG_OPF_NOT_PRESENT)
 
+#ifdef TCG_TARGET_INTERPRETER
+/* Private packed interpreter instructions, not TCG IR operations. */
+DEF(tci_movi, 1, 0, 1, TCG_OPF_NOT_PRESENT)
+DEF(tci_movl, 1, 0, 1, TCG_OPF_NOT_PRESENT)
+#endif
+
 #if TCG_TARGET_MAYBE_vec
 #include "tcg-target.opc.h"
 #endif
