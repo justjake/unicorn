@@ -172,13 +172,13 @@ static void test_arm_thumb_ite(void)
     OK(uc_hook_add(uc, &hook, UC_HOOK_CODE, test_arm_thumb_ite_count_callback,
                    &count, 1, 0));
 
-    // Execute four instructions at a time.
+    // Every instruction entry is observed, including failed conditions.
     OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(code) - 1, 0, 0));
 
     OK(uc_reg_read(uc, UC_ARM_REG_R2, &r_r2));
     OK(uc_reg_read(uc, UC_ARM_REG_R3, &r_r3));
     TEST_CHECK(r_r2 == 0x68);
-    TEST_CHECK(count == 4);
+    TEST_CHECK(count == 6);
 
     r_pc = code_start;
     r_r2 = 0;
@@ -186,18 +186,92 @@ static void test_arm_thumb_ite(void)
     OK(uc_reg_write(uc, UC_ARM_REG_R2, &r_r2));
     OK(uc_reg_write(uc, UC_ARM_REG_R3, &r_r3));
     for (int i = 0; i < 6 && r_pc < code_start + sizeof(code) - 1; i++) {
+        const uint32_t expected_it[] = {0, 0x15, 0x0a, 0x14, 0x08, 0};
+        uint32_t cpsr;
         // Execute one instruction at a time.
         OK(uc_emu_start(uc, r_pc | 1, code_start + sizeof(code) - 1, 0, 1));
 
         OK(uc_reg_read(uc, UC_ARM_REG_PC, &r_pc));
+        OK(uc_reg_read(uc, UC_ARM_REG_CPSR, &cpsr));
+        TEST_CHECK(r_pc == code_start + (i + 1) * 2);
+        TEST_CHECK((((cpsr >> 25) & 3) | ((cpsr >> 8) & 0xfc)) == expected_it[i]);
     }
     OK(uc_reg_read(uc, UC_ARM_REG_R2, &r_r2));
+    OK(uc_reg_read(uc, UC_ARM_REG_R3, &r_r3));
 
     TEST_CHECK(r_r2 == 0x68);
     TEST_CHECK(r_r3 == 0x78);
-    TEST_CHECK(count == 4);
+    TEST_CHECK(count == 6);
 
     OK(uc_close(uc));
+}
+
+struct thumb_it_stop {
+    uint64_t address;
+    uint32_t expected_it;
+    bool redirect;
+    bool called;
+};
+
+static void test_arm_thumb_it_stop_callback(uc_engine *uc, uint64_t address,
+                                           uint32_t size, void *user_data)
+{
+    struct thumb_it_stop *stop = user_data;
+    uint32_t cpsr, pc;
+    if (address != stop->address) {
+        return;
+    }
+    OK(uc_reg_read(uc, UC_ARM_REG_CPSR, &cpsr));
+    OK(uc_reg_read(uc, UC_ARM_REG_PC, &pc));
+    TEST_CHECK(pc == address);
+    TEST_CHECK((((cpsr >> 25) & 3) | ((cpsr >> 8) & 0xfc)) == stop->expected_it);
+    stop->called = true;
+    if (stop->redirect) {
+        uint32_t it = stop->expected_it;
+        it = (it & 7) == 0 ? 0 : (it & 0xe0) | ((it << 1) & 0x1f);
+        cpsr = (cpsr & ~0x0600fc00u) | ((it & 3) << 25) | ((it & 0xfc) << 8);
+        pc = (uint32_t)(address + size) | 1;
+        OK(uc_reg_write(uc, UC_ARM_REG_CPSR, &cpsr));
+        OK(uc_reg_write(uc, UC_ARM_REG_PC, &pc));
+    }
+    OK(uc_emu_stop(uc));
+}
+
+static void test_arm_thumb_it_stop_resume(void)
+{
+    // MOVS r0,#0; CMP r0,#0; ITE EQ; MOVEQ r1,#1; MOVNE r1,#2; NOP.
+    const char code[] = "\x00\x20\x00\x28\x0c\xbf\x01\x21\x02\x21\x00\xbf";
+    for (int mclass = 0; mclass < 2; mclass++) {
+        for (int failed = 0; failed < 2; failed++) {
+            for (int redirect = 0; redirect < 2; redirect++) {
+                uc_engine *uc;
+                uc_hook hook;
+                uint32_t pc, r1 = 9;
+                struct thumb_it_stop stop = {
+                    code_start + (failed ? 8 : 6), failed ? 0x18 : 0x0c,
+                    redirect, false
+                };
+                uc_common_setup(&uc, UC_ARCH_ARM,
+                                UC_MODE_THUMB | (mclass ? UC_MODE_MCLASS : 0),
+                                code, sizeof(code) - 1,
+                                mclass ? UC_CPU_ARM_CORTEX_M4 : UC_CPU_ARM_CORTEX_A15);
+                OK(uc_reg_write(uc, UC_ARM_REG_R1, &r1));
+                OK(uc_hook_add(uc, &hook, UC_HOOK_CODE, test_arm_thumb_it_stop_callback,
+                               &stop, 1, 0));
+                OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(code) - 1, 0, 0));
+                TEST_CHECK(stop.called);
+                OK(uc_reg_read(uc, UC_ARM_REG_PC, &pc));
+                OK(uc_reg_read(uc, UC_ARM_REG_R1, &r1));
+                TEST_CHECK(pc == stop.address + (redirect ? 2 : 0));
+                TEST_CHECK(r1 == (failed ? 1 : 9));
+                OK(uc_hook_del(uc, hook));
+                OK(uc_emu_start(uc, pc | 1, code_start + sizeof(code) - 1, 0, 0));
+                OK(uc_reg_read(uc, UC_ARM_REG_R1, &r1));
+                TEST_CHECK(r1 == (redirect && !failed ? 9 : 1));
+                OK(uc_close(uc));
+            }
+        }
+    }
 }
 
 static void test_arm_m_thumb_mrs(void)
@@ -1038,6 +1112,7 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_armeb_be8_sub", test_armeb_be8_sub},
              {"test_arm_thumbeb_sub", test_arm_thumbeb_sub},
              {"test_arm_thumb_ite", test_arm_thumb_ite},
+             {"test_arm_thumb_it_stop_resume", test_arm_thumb_it_stop_resume},
              {"test_arm_m_thumb_mrs", test_arm_m_thumb_mrs},
              {"test_arm_m_control", test_arm_m_control},
              {"test_arm_m_exc_return", test_arm_m_exc_return},

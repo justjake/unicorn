@@ -35,6 +35,8 @@ overhead and running the translation engine without a host JIT:
   instruction restarts at memory-hook boundaries.
 - Budgeted block accounting with an embedder-owned trace ring.
 - Observation of mapped host-memory pages during TLB fills.
+- Stoppable Thumb instruction-entry hooks with synchronized ITSTATE, including
+  instructions whose condition fails (`uc_embedder_features()` bit 4).
 - An optional Tiny Code Interpreter (TCI) backend, including Emscripten support.
 
 Extension exports use the `uc_embedder_` namespace. Their implementation and

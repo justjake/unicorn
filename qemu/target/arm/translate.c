@@ -772,7 +772,7 @@ void arm_gen_test_cc(TCGContext *tcg_ctx, int cc, TCGLabel *label)
 static inline void gen_set_condexec(DisasContext *s)
 {
     TCGContext *tcg_ctx = s->uc->tcg_ctx;
-    if (s->condexec_mask) {
+    if (s->condexec_mask || (s->thumb && HOOK_EXISTS(s->uc, UC_HOOK_CODE))) {
         uint32_t val = (s->condexec_cond << 4) | (s->condexec_mask >> 1);
         TCGv_i32 tmp = tcg_temp_new_i32(tcg_ctx);
         tcg_gen_movi_i32(tcg_ctx, tmp, val);
@@ -11368,7 +11368,9 @@ static void arm_tr_tb_start(DisasContextBase *dcbase, CPUState *cpu)
      * Note that there are no instructions which can read the condexec
      * bits, and none which can write non-static values to them, so
      * we don't need to care about whether CPUARMState is correct in the
-     * middle of a TB.
+     * middle of a TB unless a code hook is installed. Such hooks publish the
+     * current ITSTATE at every instruction entry; gen_set_condexec() also
+     * clears it on leaving the block in that case.
      */
 
     /* Reset the conditional execution bits immediately. This avoids
@@ -11576,38 +11578,32 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     }
     dc->insn = insn;
 
-    if (dc->condexec_mask && !thumb_insn_is_unconditional(dc, insn)) {
-        uint32_t cond = dc->condexec_cond;
-
-        /*
-         * Conditionally skip the insn. Note that both 0xe and 0xf mean
-         * "always"; 0xf is not "never".
-         */
-        if (cond < 0x0e) {
-            arm_skip_unless(dc, cond);
-        }
-    }
-    
-    // Unicorn:
-    //   We can't stop in the middle of the IT block.
-    //   In other words, treat the whole IT block as
-    //   a single instruction.
+    // Memory hooks retain the atomic IT-block behavior. Code hooks below
+    // publish PC and ITSTATE before testing the condition, so they can stop
+    // and resume at every instruction entry, including a failed condition.
     uc->no_exit_request = (dc->condexec_mask != 0);
 
     // Unicorn: trace this instruction on request
     insn_size = is_16bit ? 2 : 4;
     if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_CODE, dc->base.pc_next - insn_size)) {
         
-        // Sync PC in advance
+        // Publish the current architectural state before the callback.
         gen_set_pc_im(dc, dc->base.pc_next - insn_size);
-
-        if (uc->no_exit_request) {
-            gen_uc_tracecode(tcg_ctx, insn_size, UC_HOOK_CODE_IDX | UC_HOOK_FLAG_NO_STOP, uc, dc->base.pc_next - insn_size);
-        } else {
-            gen_uc_tracecode(tcg_ctx, insn_size, UC_HOOK_CODE_IDX, uc, dc->base.pc_next - insn_size);
-        }
+        gen_set_condexec(dc);
+        uc->no_exit_request = false;
+        gen_uc_tracecode(tcg_ctx, insn_size, UC_HOOK_CODE_IDX, uc, dc->base.pc_next - insn_size);
         // the callback might want to stop emulation immediately
         check_exit_request(tcg_ctx);
+        uc->no_exit_request = (dc->condexec_mask != 0);
+    }
+
+    if (dc->condexec_mask && !thumb_insn_is_unconditional(dc, insn)) {
+        uint32_t cond = dc->condexec_cond;
+
+        /* Both 0xe and 0xf mean "always"; 0xf is not "never". */
+        if (cond < 0x0e) {
+            arm_skip_unless(dc, cond);
+        }
     }
 
     tcg_ctx->pc_start = dc->base.pc_next - insn_size;

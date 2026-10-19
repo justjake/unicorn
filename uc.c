@@ -3242,10 +3242,11 @@ uc_err uc_embedder_request_restart(uc_engine *uc)
 // embedder: feature bits of these exports. 1: with a translation filter installed,
 // bit 31 of a block hook's size reports Thumb state. 2: uc_embedder_accounting and
 // filter decision bit 4 (block hook on every entry); bit 30 marks fast blocks.
+// 4: stoppable Thumb code hooks publish ITSTATE and include failed conditions.
 UNICORN_EXPORT
 uint32_t uc_embedder_features(void)
 {
-    return 1 | 2;
+    return 1 | 2 | 4;
 }
 
 // embedder: the budgeted block accounting record (uc_priv.h): the embedder reads
