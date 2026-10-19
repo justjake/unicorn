@@ -1,5 +1,57 @@
 /* Packed TCI bytecode: constants, branches, split words and typed helpers. */
 #include "unicorn_test.h"
+#include <setjmp.h>
+#include "tcg-target.h"
+
+enum {
+#define DEF(name, ...) INDEX_op_##name,
+#include "tcg/tcg-opc.h"
+};
+
+struct CPUARMState;
+extern uintptr_t tcg_qemu_tb_exec_arm(struct CPUARMState *, uint8_t *);
+
+static jmp_buf helper_jump;
+static unsigned helper_calls;
+
+static uint64_t noreturn_helper(const uint64_t *args)
+{
+    (void)args;
+    ++helper_calls;
+    longjmp(helper_jump, 1);
+}
+
+static void test_helper_pool_displacements(void)
+{
+    /* A final noreturn call can directly precede its aligned pool entry. */
+    const size_t call_offsets[] = {12, 28, 60};
+    size_t i;
+
+    helper_calls = 0;
+    for (i = 0; i < sizeof(call_offsets) / sizeof(call_offsets[0]); ++i) {
+        _Alignas(16) uint8_t bytecode[80] = {0};
+        uintptr_t descriptor[] = {(uintptr_t)noreturn_helper, 0};
+        int displacement = 32 - (int)call_offsets[i] - 4;
+        uint32_t call = INDEX_op_call |
+            (((uint32_t)displacement & 0xfffff) << 12);
+
+        memcpy(bytecode + call_offsets[i], &call, sizeof(call));
+        memcpy(bytecode + 32, descriptor, sizeof(descriptor));
+        if (setjmp(helper_jump) == 0) {
+            /* The helper exits before the interpreter accesses CPU state. */
+            tcg_qemu_tb_exec_arm(NULL, bytecode + call_offsets[i]);
+            TEST_CHECK(0);
+        }
+        TEST_CHECK(helper_calls == i + 1);
+    }
+}
+
+static void test_null_exit(void)
+{
+    uint32_t bytecode = INDEX_op_exit_tb;
+
+    TEST_CHECK(tcg_qemu_tb_exec_arm(NULL, (uint8_t *)&bytecode) == 0);
+}
 
 static uc_engine *machine(const uint32_t *words, size_t count)
 {
@@ -125,6 +177,8 @@ static void test_signed_and_doubleword_memory(void)
 }
 
 TEST_LIST = {
+    {"helper_pool_displacements", test_helper_pool_displacements},
+    {"null_exit", test_null_exit},
     {"constants_arithmetic_and_branches", test_constants_arithmetic_and_branches},
     {"typed_helpers_with_64_bit_arguments", test_typed_helpers_with_64_bit_arguments},
     {"signed_and_doubleword_memory", test_signed_and_doubleword_memory},

@@ -47,3 +47,8 @@ constant-pool loads, integer arithmetic, conditional branches, signed and
 doubleword memory accesses, and floating-point helpers with 64-bit arguments
 and results. Run both on native and wasm32 builds: wasm32 exercises split
 helper arguments and paired registers that native 64-bit builds do not use.
+
+Direct bytecode regressions also cover helper descriptors at positive, zero and
+negative displacements, plus the null exit sentinel. A zero-distance helper
+descriptor is the next instruction address, not a null pointer; calls use a
+separate pool-pointer decoder from nullable exits.

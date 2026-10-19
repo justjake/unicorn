@@ -64,7 +64,7 @@ static uint64_t tci_uint64(uint32_t high, uint32_t low)
  *   I = immediate (tcg_target_ulong)
  *   l = label or pointer
  *   m = immediate (TCGMemOpIdx)
- *   n = immediate (call return length)
+ *   p = PC-relative pool pointer (zero displacement is valid)
  *   r = register
  *   s = signed ldst offset
  */
@@ -73,6 +73,11 @@ static void tci_args_l(uint32_t insn, const void *tb_ptr, void **l0)
 {
     int diff = sextract32(insn, 12, 20);
     *l0 = diff ? (void *)tb_ptr + diff : NULL;
+}
+
+static void tci_args_p(uint32_t insn, const void *tb_ptr, void **p0)
+{
+    *p0 = (void *)tb_ptr + sextract32(insn, 12, 20);
 }
 
 static void tci_args_r(uint32_t insn, TCGReg *r0)
@@ -545,7 +550,7 @@ uintptr_t tcg_qemu_tb_exec(CPUArchState *env, uint8_t *v_tb_ptr)
 
         switch (opc) {
         case INDEX_op_call:
-            tci_args_l(insn, tb_ptr, &ptr);
+            tci_args_p(insn, tb_ptr, &ptr);
             {
                 const tcg_target_ulong *entry = ptr;
                 unsigned words = entry[1] & 0xff;
@@ -1246,7 +1251,7 @@ void tci_disas(const void *code)
         break;
 
     case INDEX_op_call:
-        tci_args_l(insn, tb_ptr, &ptr);
+        tci_args_p(insn, tb_ptr, &ptr);
         fprintf(stderr, "%-12s  %p", op_name, ptr);
         break;
 

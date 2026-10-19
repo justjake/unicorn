@@ -1518,9 +1518,13 @@ if(UNICORN_BUILD_TESTS)
         target_compile_options(${TEST_FILE} PRIVATE
             ${UNICORN_COMPILE_OPTIONS}
         )
-        target_link_libraries(${TEST_FILE} PRIVATE
-            ${SAMPLES_LIB}
-        )
+        set(TEST_LIBRARIES ${SAMPLES_LIB})
+        if(TEST_FILE STREQUAL "test_tci" AND BUILD_SHARED_LIBS)
+            # The bytecode regression also exercises the internal executor.
+            list(REMOVE_ITEM TEST_LIBRARIES unicorn)
+            list(INSERT TEST_LIBRARIES 0 unicorn_static)
+        endif()
+        target_link_libraries(${TEST_FILE} PRIVATE ${TEST_LIBRARIES})
         add_test(${TEST_FILE} ${TEST_FILE})
         if(ANDROID_ABI)
             file(APPEND ${CMAKE_BINARY_DIR}/adb.sh "adb push ${TEST_FILE} /data/local/tmp/build/\n")
