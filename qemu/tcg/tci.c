@@ -531,6 +531,10 @@ TCI_STORE(tci_st_beq, uint64_t, stq_be_p, helper_be_stq_mmu)
 # define qemu_st_beq(X)  stq_be_p(g2h(taddr), X)
 #endif
 
+#ifdef CONFIG_TCI_WASM_TIER
+#include "tci-wasm.inc.c"
+#endif
+
 /* Interpret pseudo code in tb. */
 uintptr_t tcg_qemu_tb_exec(CPUArchState *env, uint8_t *tb_ptr)
 {
@@ -538,6 +542,9 @@ uintptr_t tcg_qemu_tb_exec(CPUArchState *env, uint8_t *tb_ptr)
     long tcg_temps[CPU_TEMP_BUF_NLONGS];
     uintptr_t sp_value = (uintptr_t)(tcg_temps + CPU_TEMP_BUF_NLONGS);
     uintptr_t ret = 0;
+#ifdef CONFIG_TCI_WASM_TIER
+    uint64_t jit_args[MAX_OPC_PARAM_IARGS];
+#endif
 
     regs[TCG_AREG0] = (tcg_target_ulong)env;
     regs[TCG_REG_CALL_STACK] = sp_value;
@@ -572,6 +579,31 @@ uintptr_t tcg_qemu_tb_exec(CPUArchState *env, uint8_t *tb_ptr)
         tci_tb_ptr = (uintptr_t)tb_ptr;
 
         switch (opc) {
+#ifdef CONFIG_TCI_WASM_TIER
+        case UINT8_MAX: {
+            TranslationBlock *tb = (TranslationBlock *)(uintptr_t)tci_read_i32(&tb_ptr);
+            tci_wasm_entries++;
+            if (tb->tci_wasm_slot) {
+                typedef uint64_t (*Block)(void *, uint32_t *, uint64_t *);
+                uint64_t result;
+                tci_wasm_executions++;
+                result = ((Block)(uintptr_t)tb->tci_wasm_slot)(env, regs, jit_args);
+                if (!(uint32_t)result) {
+                    ret = result >> 32;
+                    goto exit;
+                }
+                tb_ptr = (uint8_t *)(uintptr_t)(uint32_t)result;
+                continue;
+            }
+            if (tb->tci_wasm_id &&
+                tb->tci_wasm_hits < uc_embedder_tci_wasm_threshold() &&
+                ++tb->tci_wasm_hits == uc_embedder_tci_wasm_threshold()) {
+                tci_wasm_notice(env->uc, 1, tb->tci_wasm_id,
+                    &tb->tci_wasm_slot, (uint8_t *)tb->tc.ptr + 6, tb->tc.size - 6);
+            }
+            break;
+        }
+#endif
         case INDEX_op_call:
             t0 = tci_read_ri(regs, &tb_ptr);
             {

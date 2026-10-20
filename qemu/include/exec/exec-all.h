@@ -300,6 +300,11 @@ struct tb_tc {
 };
 
 struct TranslationBlock {
+#ifdef CONFIG_TCI_WASM_TIER
+    uint32_t tci_wasm_id;
+    uint32_t tci_wasm_hits;
+    uint32_t tci_wasm_slot;
+#endif
     target_ulong pc;   /* simulated PC corresponding to this block (EIP + CS base) */
     target_ulong cs_base; /* CS base for this block */
     uint32_t flags; /* flags defining in which context the code was generated */
@@ -383,6 +388,11 @@ static inline uint32_t curr_cflags(void)
 /* TranslationBlock invalidate API */
 void tb_invalidate_phys_addr(AddressSpace *as, hwaddr addr, MemTxAttrs attrs);
 void tb_flush(CPUState *cpu);
+#ifdef CONFIG_TCI_WASM_TIER
+uint32_t uc_embedder_tci_wasm_threshold(void);
+void uc_embedder_tci_wasm_init(TranslationBlock *tb);
+void uc_embedder_tci_wasm_invalidate(struct uc_struct *uc, TranslationBlock *tb);
+#endif
 void tb_phys_invalidate(TCGContext *tcg_ctx, TranslationBlock *tb, tb_page_addr_t page_addr);
 TranslationBlock *tb_htable_lookup(CPUState *cpu, target_ulong pc,
                                    target_ulong cs_base, uint32_t flags,

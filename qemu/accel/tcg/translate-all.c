@@ -1376,6 +1376,9 @@ static void do_tb_flush(CPUState *cpu, run_on_cpu_data tb_flush_count)
     cpu_tb_jmp_cache_clear(cpu);
 #endif
 
+#ifdef CONFIG_TCI_WASM_TIER
+    uc_embedder_tci_wasm_invalidate(cpu->uc, NULL);
+#endif
     qht_reset_size(cpu->uc, &cpu->uc->tcg_ctx->tb_ctx.htable, CODE_GEN_HTABLE_SIZE);
     page_flush_tb(cpu->uc);
 
@@ -1504,6 +1507,9 @@ static void do_tb_phys_invalidate(TCGContext *tcg_ctx, TranslationBlock *tb, boo
 
     /* make sure no further incoming jumps will be chained to this TB */
     tb->cflags = tb->cflags | CF_INVALID;
+#ifdef CONFIG_TCI_WASM_TIER
+    uc_embedder_tci_wasm_invalidate(uc, tb);
+#endif
 
     /* remove the TB from the hash list */
     phys_pc = tb->page_addr[0] + (tb->pc & ~TARGET_PAGE_MASK);

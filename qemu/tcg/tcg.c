@@ -3784,6 +3784,17 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
 
     s->code_buf = tb->tc.ptr;
     s->code_ptr = tb->tc.ptr;
+#ifdef CONFIG_TCI_WASM_TIER
+    uc_embedder_tci_wasm_init(tb);
+    if (uc_embedder_tci_wasm_threshold()) {
+        /* TCI-only prefix, outside the generic opcode domain. Search-table
+         * offsets below include it, retaining precise helper fault addresses. */
+        QEMU_BUILD_BUG_ON(NB_OPS > UINT8_MAX);
+        tcg_out8(s, UINT8_MAX);
+        tcg_out8(s, 6);
+        tcg_out32(s, (uintptr_t)tb);
+    }
+#endif
 
 #ifdef TCG_TARGET_NEED_LDST_LABELS
     QSIMPLEQ_INIT(&s->ldst_labels);
