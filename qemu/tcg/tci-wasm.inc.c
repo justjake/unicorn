@@ -13,18 +13,21 @@ static uint32_t tci_wasm_threshold;
 static uint32_t tci_wasm_generation;
 static bool tci_wasm_started;
 static uc_tci_wasm_notice tci_wasm_notice;
-static uint64_t tci_wasm_entries, tci_wasm_executions;
+enum { TCI_WASM_COMPILED, TCI_WASM_ENTRIES, TCI_WASM_CHAINED };
+static uint64_t tci_wasm_counters[3];
+static uint32_t tci_wasm_dispatcher;
 
-uc_err uc_embedder_tci_wasm_configure(uint32_t threshold, uc_tci_wasm_notice notice)
+uc_err uc_embedder_tci_wasm_configure(uint32_t threshold, uc_tci_wasm_notice notice, uint32_t dispatcher)
 {
     /* A module chooses its tier before constructing/running any CPU. */
-    if (tci_wasm_started || tci_wasm_notice || !notice || !threshold || threshold > 1000000) {
+    if (tci_wasm_started || tci_wasm_notice || !notice || !dispatcher || !threshold || threshold > 1000000) {
         return UC_ERR_ARG;
     }
     QEMU_BUILD_BUG_ON(TCG_TARGET_NB_REGS != 16 || TCG_AREG0 != 14 || TCG_REG_CALL_STACK != 15);
     QEMU_BUILD_BUG_ON(TCG_COND_EQ != 8 || TCG_COND_NE != 9 || TCG_COND_LT != 2 || TCG_COND_GE != 3);
     QEMU_BUILD_BUG_ON(TCG_COND_LE != 10 || TCG_COND_GT != 11 || TCG_COND_LTU != 4 || TCG_COND_GEU != 5);
     QEMU_BUILD_BUG_ON(TCG_COND_LEU != 12 || TCG_COND_GTU != 13);
+    tci_wasm_dispatcher = dispatcher;
     tci_wasm_threshold = threshold;
     tci_wasm_notice = notice;
     return UC_ERR_OK;
@@ -48,9 +51,16 @@ const uint32_t *uc_embedder_tci_wasm_layout(uc_engine *uc)
     memcpy(layout, value, sizeof(layout));
     return layout;
 }
+const uint32_t *uc_embedder_tci_wasm_dispatch_layout(void)
+{
+    static const uint32_t layout[] = {
+        1, offsetof(TranslationBlock, tci_wasm_slot), (uintptr_t)tci_wasm_counters
+    };
+    return layout;
+}
 uint64_t uc_embedder_tci_wasm_count(uint32_t counter)
 {
-    return counter ? tci_wasm_entries : tci_wasm_executions;
+    return counter < ARRAY_SIZE(tci_wasm_counters) ? tci_wasm_counters[counter] : 0;
 }
 void uc_embedder_tci_wasm_init(TranslationBlock *tb)
 {

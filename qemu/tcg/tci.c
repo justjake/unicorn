@@ -582,12 +582,12 @@ uintptr_t tcg_qemu_tb_exec(CPUArchState *env, uint8_t *tb_ptr)
 #ifdef CONFIG_TCI_WASM_TIER
         case UINT8_MAX: {
             TranslationBlock *tb = (TranslationBlock *)(uintptr_t)tci_read_i32(&tb_ptr);
-            tci_wasm_entries++;
+            tci_wasm_counters[TCI_WASM_ENTRIES]++;
             if (tb->tci_wasm_slot) {
-                typedef uint64_t (*Block)(void *, uint32_t *, uint64_t *);
+                typedef uint64_t (*Dispatch)(void *, uint32_t *, uint64_t *, uint32_t);
                 uint64_t result;
-                tci_wasm_executions++;
-                result = ((Block)(uintptr_t)tb->tci_wasm_slot)(env, regs, jit_args);
+                tci_wasm_counters[TCI_WASM_COMPILED]++;
+                result = ((Dispatch)(uintptr_t)tci_wasm_dispatcher)(env, regs, jit_args, tb->tci_wasm_slot);
                 if (!(uint32_t)result) {
                     ret = result >> 32;
                     goto exit;
