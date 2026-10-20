@@ -58,6 +58,18 @@ const uint32_t *uc_embedder_tci_wasm_dispatch_layout(void)
     };
     return layout;
 }
+const uint32_t *uc_embedder_tci_wasm_helper_layout(void)
+{
+    static uint32_t layout[8];
+    const uint32_t value[8] = {
+        1, (uintptr_t)&tci_tb_ptr, offsetof(CPUArchState, uc),
+        offsetof(struct uc_struct, tci_return_pending), offsetof(CPUArchState, CF),
+        offsetof(struct uc_struct, embedder_retry_limit), offsetof(struct uc_struct, cpu),
+        offsetof(ArchCPU, neg.icount_decr) - offsetof(ArchCPU, parent_obj)
+    };
+    memcpy(layout, value, sizeof(layout));
+    return layout;
+}
 uint64_t uc_embedder_tci_wasm_count(uint32_t counter)
 {
     return counter < ARRAY_SIZE(tci_wasm_counters) ? tci_wasm_counters[counter] : 0;

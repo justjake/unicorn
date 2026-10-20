@@ -22,6 +22,11 @@ UNICORN_EXPORT const char *uc_embedder_tci_wasm_opname(uc_engine *engine, uint32
 UNICORN_EXPORT const uint32_t *uc_embedder_tci_wasm_layout(uc_engine *engine);
 /* Version, TranslationBlock slot offset, contiguous u64 compiled/entry/chain counters. */
 UNICORN_EXPORT const uint32_t *uc_embedder_tci_wasm_dispatch_layout(void);
+/* Version, precise-PC word address, env-relative uc pointer, uc-relative
+ * normal-exit flag, env-relative ARM CF, uc-relative retry and CPU pointers,
+ * CPU-relative instruction-count decrement. */
+UNICORN_EXPORT const uint32_t *uc_embedder_tci_wasm_helper_layout(void);
+UNICORN_EXPORT const char *uc_embedder_tci_wasm_helper_name(uint32_t function);
 UNICORN_EXPORT uint64_t uc_embedder_tci_wasm_count(uint32_t counter);
 UNICORN_EXPORT uint64_t uc_embedder_tci_wasm_load(void *env, uint32_t address, uint32_t oi, uint32_t pc);
 UNICORN_EXPORT void uc_embedder_tci_wasm_store(void *env, uint32_t address, uint64_t value, uint32_t oi, uint32_t pc);

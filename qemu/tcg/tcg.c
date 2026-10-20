@@ -676,6 +676,20 @@ void HELPER(tci_hookcode)(void *callback, void *uc, uint64_t address,
 static const TCGHelperInfo all_helpers[] = {
 #include "exec/helper-tcg.h"
 };
+#ifdef CONFIG_TCI_WASM_TIER
+#include "unicorn/tci_wasm.h"
+const char *uc_embedder_tci_wasm_helper_name(uint32_t function)
+{
+    size_t i;
+    for (i = 0; i < ARRAY_SIZE(all_helpers); ++i) {
+        if ((uintptr_t)all_helpers[i].tci_wrapper == function) {
+            return all_helpers[i].name;
+        }
+    }
+    return NULL;
+}
+#endif
+
 
 static const TCGOpDef tcg_op_defs_org[] = {
 #define DEF(s, oargs, iargs, cargs, flags) \
