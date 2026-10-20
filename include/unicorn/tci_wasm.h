@@ -12,6 +12,13 @@ typedef void (*uc_tci_wasm_notice)(uc_engine *engine, uint32_t event,
 /* Configure once, before any translation block has been generated. */
 UNICORN_EXPORT uc_err uc_embedder_tci_wasm_configure(uint32_t threshold, uc_tci_wasm_notice notice);
 UNICORN_EXPORT const char *uc_embedder_tci_wasm_opname(uc_engine *engine, uint32_t opcode);
+/* Copied by the owner before compilation; version 1 has 22 wasm32 words:
+ * version, page bits, env-relative TLB descriptors, descriptor stride/table,
+ * entry bits/read/write/addend, env-relative uc pointer, uc-relative page-hook
+ * flag and read/write/read-after hook heads, then MemOp size/sign/byte-swap,
+ * alignment shift/mask/unaligned/natural and MMU mode count. Offsets are signed.
+ */
+UNICORN_EXPORT const uint32_t *uc_embedder_tci_wasm_layout(uc_engine *engine);
 UNICORN_EXPORT uint64_t uc_embedder_tci_wasm_count(uint32_t counter);
 UNICORN_EXPORT uint64_t uc_embedder_tci_wasm_load(void *env, uint32_t address, uint32_t oi, uint32_t pc);
 UNICORN_EXPORT void uc_embedder_tci_wasm_store(void *env, uint32_t address, uint64_t value, uint32_t oi, uint32_t pc);

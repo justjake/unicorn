@@ -30,6 +30,24 @@ uc_err uc_embedder_tci_wasm_configure(uint32_t threshold, uc_tci_wasm_notice not
     return UC_ERR_OK;
 }
 uint32_t uc_embedder_tci_wasm_threshold(void) { return tci_wasm_threshold; }
+const uint32_t *uc_embedder_tci_wasm_layout(uc_engine *uc)
+{
+    static uint32_t layout[22];
+    const uint32_t value[22] = {
+        1, TARGET_PAGE_BITS, TLB_MASK_TABLE_OFS(0), sizeof(CPUTLBDescFast),
+        offsetof(CPUTLBDescFast, table), CPU_TLB_ENTRY_BITS,
+        offsetof(CPUTLBEntry, addr_read), offsetof(CPUTLBEntry, addr_write),
+        offsetof(CPUTLBEntry, addend), offsetof(CPUArchState, uc),
+        offsetof(struct uc_struct, embedder_page_hooks),
+        offsetof(struct uc_struct, hook[UC_HOOK_MEM_READ_IDX].head),
+        offsetof(struct uc_struct, hook[UC_HOOK_MEM_WRITE_IDX].head),
+        offsetof(struct uc_struct, hook[UC_HOOK_MEM_READ_AFTER_IDX].head),
+        MO_SIZE, MO_SIGN, MO_BSWAP, MO_ASHIFT, MO_AMASK, MO_UNALN, MO_ALIGN,
+        NB_MMU_MODES
+    };
+    memcpy(layout, value, sizeof(layout));
+    return layout;
+}
 uint64_t uc_embedder_tci_wasm_count(uint32_t counter)
 {
     return counter ? tci_wasm_entries : tci_wasm_executions;
