@@ -917,11 +917,13 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
         /* Observe the actual backing pointer, including CPU aliases/TCM.
            A TLB refill records a conservative superset of accessed bytes,
            without adding a callback to individual RAM loads/stores. */
-        if (cpu->uc->embedder_observed_pages &&
-            addend >= cpu->uc->embedder_observed_base &&
-            addend - cpu->uc->embedder_observed_base < cpu->uc->embedder_observed_size) {
-            size_t page = (addend - cpu->uc->embedder_observed_base) >> cpu->uc->embedder_observed_shift;
-            cpu->uc->embedder_observed_pages[page >> 6] |= UINT64_C(1) << (page & 63);
+        for (size_t i = 0; i < cpu->uc->embedder_observer_count; i++) {
+            const uc_backing_observer *r = &cpu->uc->embedder_observers[i];
+            if (addend >= r->base && addend - r->base < r->size) {
+                size_t page = (addend - r->base) >> r->shift;
+                r->pages[page >> 6] |= UINT64_C(1) << (page & 63);
+                break;
+            }
         }
     } else {
         /* I/O does not; force the host address to NULL. */

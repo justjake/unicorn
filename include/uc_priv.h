@@ -278,6 +278,16 @@ enum uc_embedder_exit_counter {
     UC_EXIT_NORMAL_CHECK, UC_EXIT_NORMAL_RETRY, UC_EXIT_COUNTER_COUNT
 };
 
+/* Embedder-owned page flags, one conservative bit per observed host page.
+ * The array is copied; each bitmap remains live until replaced or uc_close. */
+typedef struct uc_backing_observer {
+    uintptr_t base;
+    size_t size;
+    uint64_t *pages;
+    unsigned shift;
+} uc_backing_observer;
+#define UC_BACKING_OBSERVERS 32
+
 struct uc_struct {
     uc_arch arch;
     uc_mode mode;
@@ -447,10 +457,8 @@ struct uc_struct {
     bool embedder_page_hooks;
     /* Optional host-range observation, one bit per embedder-selected page.
        Set on TLB fill; never changes guest permissions or execution. */
-    uintptr_t embedder_observed_base;
-    size_t embedder_observed_size;
-    uint64_t *embedder_observed_pages;
-    unsigned embedder_observed_shift;
+    size_t embedder_observer_count;
+    uc_backing_observer embedder_observers[UC_BACKING_OBSERVERS];
     // embedder: one bit per 1 KiB physical page whose stores reach embedder_watched
     // write hooks from the TLB fast path's slow path
     uint8_t *embedder_watch;

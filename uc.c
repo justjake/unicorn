@@ -3116,16 +3116,29 @@ uc_err uc_embedder_set_page_hooks(uc_engine *uc, bool enabled)
 }
 
 UNICORN_EXPORT
-uc_err uc_embedder_observe_host_pages(uc_engine *uc, uintptr_t base, size_t size,
-                                     uint64_t *pages, unsigned shift)
+uc_err uc_embedder_observe_backings(uc_engine *uc,
+                                    const uc_backing_observer *ranges,
+                                    size_t count)
 {
-    if (!base || !size || !pages || shift < 12 || shift > 20 || base > UINTPTR_MAX - size)
+    if (count > UC_BACKING_OBSERVERS || (count && !ranges))
         return UC_ERR_ARG;
+    for (size_t i = 0; i < count; i++) {
+        const uc_backing_observer *r = &ranges[i];
+        if (!r->base || !r->size || !r->pages || r->shift < 12 ||
+            r->shift > 20 || r->base > UINTPTR_MAX - r->size)
+            return UC_ERR_ARG;
+        for (size_t j = 0; j < i; j++) {
+            const uc_backing_observer *p = &ranges[j];
+            if (r->base < p->base + p->size && p->base < r->base + r->size)
+                return UC_ERR_ARG;
+        }
+    }
     UC_INIT(uc);
-    uc->embedder_observed_base = base;
-    uc->embedder_observed_size = size;
-    uc->embedder_observed_pages = pages;
-    uc->embedder_observed_shift = shift;
+    if (count)
+        memcpy(uc->embedder_observers, ranges, count * sizeof(*ranges));
+    uc->embedder_observer_count = count;
+    /* Re-arm after the embedder clears its page flags. Cached writable TLB
+     * entries must not bypass the next interval's first access. */
     uc->tcg_flush_tlb(uc);
     restore_jit_state(uc);
     return UC_ERR_OK;
