@@ -28,6 +28,10 @@ UNICORN_EXPORT const uint32_t *uc_embedder_tci_wasm_dispatch_layout(void);
  * normal-exit flag, env-relative ARM CF, uc-relative retry and CPU pointers,
  * CPU-relative instruction-count decrement. */
 UNICORN_EXPORT const uint32_t *uc_embedder_tci_wasm_helper_layout(void);
+/* Version 1, 32 words: CPU uc pointer; uc stop/budget/enabled offsets; block
+ * index and fast/count masks; TB generation/slot/code offsets; counters;
+ * sixteen GPR and four NZCV offsets. Accounting remains in its native helper. */
+UNICORN_EXPORT const uint32_t *uc_embedder_tci_wasm_register_layout(void);
 UNICORN_EXPORT const char *uc_embedder_tci_wasm_helper_name(uint32_t function);
 /* Original typed target for a known TCI wrapper, or zero. The caller must
  * match the helper's declared argument and result signature exactly. */

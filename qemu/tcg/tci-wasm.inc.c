@@ -59,6 +59,29 @@ const uint32_t *uc_embedder_tci_wasm_dispatch_layout(void)
     };
     return layout;
 }
+const uint32_t *uc_embedder_tci_wasm_register_layout(void)
+{
+    static uint32_t layout[32];
+    const uint32_t fixed[] = {
+        1, offsetof(CPUArchState, uc), offsetof(struct uc_struct, stop_request),
+        offsetof(struct uc_struct, embedder_acct.budget),
+        offsetof(struct uc_struct, embedder_acct.enabled),
+        UC_HOOK_BLOCK_IDX, 0x40000000, 0x3fffffff,
+        offsetof(TranslationBlock, tci_wasm_id),
+        offsetof(TranslationBlock, tci_wasm_slot), offsetof(TranslationBlock, tc.ptr),
+        (uintptr_t)tci_wasm_counters
+    };
+    unsigned i;
+    memcpy(layout, fixed, sizeof(fixed));
+    for (i = 0; i < 16; i++) {
+        layout[12 + i] = offsetof(CPUArchState, regs) + i * sizeof(uint32_t);
+    }
+    layout[28] = offsetof(CPUArchState, NF);
+    layout[29] = offsetof(CPUArchState, ZF);
+    layout[30] = offsetof(CPUArchState, CF);
+    layout[31] = offsetof(CPUArchState, VF);
+    return layout;
+}
 const uint32_t *uc_embedder_tci_wasm_helper_layout(void)
 {
     static uint32_t layout[8];
