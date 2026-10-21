@@ -921,7 +921,9 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
             const uc_backing_observer *r = &cpu->uc->embedder_observers[i];
             if (addend >= r->base && addend - r->base < r->size) {
                 size_t page = (addend - r->base) >> r->shift;
-                r->pages[page >> 6] |= UINT64_C(1) << (page & 63);
+                __atomic_fetch_or(&r->pages[page >> 6],
+                                  UINT64_C(1) << (page & 63),
+                                  __ATOMIC_RELAXED);
                 break;
             }
         }

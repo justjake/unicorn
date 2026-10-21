@@ -153,7 +153,7 @@ void *HELPER(lookup_tb_ptr)(CPUArchState *env)
     uint32_t flags;
     struct uc_struct *uc = (struct uc_struct *)cpu->uc;
 
-    tb = tb_lookup__cpu_state(cpu, &pc, &cs_base, &flags, curr_cflags());
+    tb = tb_lookup__cpu_state(cpu, &pc, &cs_base, &flags, curr_cflags(cpu));
     if (tb == NULL) {
         return uc->tcg_ctx->code_gen_epilogue;
     }
@@ -174,7 +174,7 @@ void HELPER(check_exit_request)(void *p, uint32_t in_delay_slot) {
         uint32_t limit = uc->embedder_retry_limit;
         uc->embedder_retry_limit = 0;
         if (!cpu_loop_exit_requested(uc->cpu) && !in_delay_slot) {
-            uc->cpu->cflags_next_tb = curr_cflags() | (limit & CF_COUNT_MASK);
+            uc->cpu->cflags_next_tb = curr_cflags(uc->cpu) | (limit & CF_COUNT_MASK);
 #if defined(CONFIG_TCG_INTERPRETER)
             cpu_restore_state(uc->cpu, GETPC(), true);
             uc->embedder_exit_counters[UC_EXIT_NORMAL_RETRY]++;

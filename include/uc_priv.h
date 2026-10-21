@@ -489,6 +489,7 @@ struct uc_struct {
         uint64_t *ring;
         uint64_t mask;
         uint64_t enabled;
+        const uint32_t *pause_requested;
     } embedder_acct;
     // Observational host counters, never serialized in a CPU context. Entries
     // 0..6 are actual jumps by call site; 7..9 are request origins; 10..11

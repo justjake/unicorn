@@ -2140,6 +2140,17 @@ void helper_uc_tracecode(int32_t size, uc_hook_idx index, void *handle,
         revert_uc_emu_stop(uc);
     }
 
+    // embedder: asynchronous pauses apply at every translated block boundary,
+    // including slow blocks and modes that do not use instruction accounting.
+    if (index == UC_HOOK_BLOCK_IDX && uc->embedder_acct.pause_requested &&
+        __atomic_load_n(uc->embedder_acct.pause_requested, __ATOMIC_ACQUIRE)) {
+        uc->stop_request = true;
+        if (uc->cpu) {
+            cpu_exit(uc->cpu);
+        }
+        return;
+    }
+
     // embedder: budgeted block accounting (see uc_priv.h embedder_acct)
     if (index == UC_HOOK_BLOCK_IDX && (size & 0x40000000) && uc->embedder_acct.enabled) {
         int64_t count = (size & 0x3fffffff) >> 2;
@@ -3258,16 +3269,34 @@ uc_err uc_embedder_request_restart(uc_engine *uc)
 // bit 31 of a block hook's size reports Thumb state. 2: uc_embedder_accounting and
 // filter decision bit 4 (block hook on every entry); bit 30 marks fast blocks.
 // 4: stoppable Thumb code hooks publish ITSTATE and include failed conditions.
+// 8: accounting record includes the asynchronous pause_requested field.
+// 16: per-engine CF_PARALLEL selection for R-profile multi-core TCG.
 UNICORN_EXPORT
 uint32_t uc_embedder_features(void)
 {
-    return 1 | 2 | 4;
+    return 1 | 2 | 4 | 8 | 16;
+}
+
+// Select parallel TCG translation semantics for this engine. The caller must
+// keep the engine stopped while changing modes; translations carry CF_PARALLEL
+// and must be discarded when the mode changes.
+UNICORN_EXPORT
+uc_err uc_embedder_set_parallel_cpus(uc_engine *uc, bool enabled)
+{
+    UC_INIT(uc);
+    if (uc->cpu->embedder_parallel_cpus != enabled) {
+        uc->cpu->embedder_parallel_cpus = enabled;
+        uc->cpu->cflags_next_tb = -1;
+        uc->tb_flush(uc);
+    }
+    restore_jit_state(uc);
+    return UC_ERR_OK;
 }
 
 // embedder: the budgeted block accounting record (uc_priv.h): the embedder reads
-// and writes budget and head directly; ring/mask/enabled are its to set while
-// no emulation runs. Layout: int64 budget, u64 head, u64 *ring, u64 mask,
-// u64 enabled.
+// and writes budget and head directly; ring/mask/enabled/pause_requested are
+// set while no emulation runs. Layout: int64 budget, u64 head, u64 *ring,
+// u64 mask, u64 enabled, u32 *pause_requested.
 UNICORN_EXPORT
 void *uc_embedder_accounting(uc_engine *uc)
 {
