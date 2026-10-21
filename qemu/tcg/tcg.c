@@ -688,6 +688,16 @@ const char *uc_embedder_tci_wasm_helper_name(uint32_t function)
     }
     return NULL;
 }
+uint32_t uc_embedder_tci_wasm_helper_target(uint32_t function)
+{
+    size_t i;
+    for (i = 0; i < ARRAY_SIZE(all_helpers); ++i) {
+        if ((uintptr_t)all_helpers[i].tci_wrapper == function) {
+            return (uintptr_t)all_helpers[i].func;
+        }
+    }
+    return 0;
+}
 #endif
 
 

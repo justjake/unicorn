@@ -29,6 +29,9 @@ UNICORN_EXPORT const uint32_t *uc_embedder_tci_wasm_dispatch_layout(void);
  * CPU-relative instruction-count decrement. */
 UNICORN_EXPORT const uint32_t *uc_embedder_tci_wasm_helper_layout(void);
 UNICORN_EXPORT const char *uc_embedder_tci_wasm_helper_name(uint32_t function);
+/* Original typed target for a known TCI wrapper, or zero. The caller must
+ * match the helper's declared argument and result signature exactly. */
+UNICORN_EXPORT uint32_t uc_embedder_tci_wasm_helper_target(uint32_t function);
 UNICORN_EXPORT uint64_t uc_embedder_tci_wasm_count(uint32_t counter);
 UNICORN_EXPORT uint64_t uc_embedder_tci_wasm_load(void *env, uint32_t address, uint32_t oi, uint32_t pc);
 UNICORN_EXPORT void uc_embedder_tci_wasm_store(void *env, uint32_t address, uint64_t value, uint32_t oi, uint32_t pc);
