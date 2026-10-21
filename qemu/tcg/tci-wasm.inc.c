@@ -54,7 +54,8 @@ const uint32_t *uc_embedder_tci_wasm_layout(uc_engine *uc)
 const uint32_t *uc_embedder_tci_wasm_dispatch_layout(void)
 {
     static const uint32_t layout[] = {
-        1, offsetof(TranslationBlock, tci_wasm_slot), (uintptr_t)tci_wasm_counters
+        2, offsetof(TranslationBlock, tci_wasm_slot),
+        offsetof(TranslationBlock, tc.ptr), (uintptr_t)tci_wasm_counters
     };
     return layout;
 }

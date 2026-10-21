@@ -10,7 +10,8 @@ extern "C" {
 typedef void (*uc_tci_wasm_notice)(uc_engine *engine, uint32_t event,
     uint32_t generation, uint32_t *slot, const void *code, uint32_t bytes);
 /* Configure once before translation. dispatcher is a Wasm table slot with
- * signature (env, registers, helper_args, first_block_slot) -> uint64_t. */
+ * signature (env, registers, helper_args, first_block_slot, first_code_base) -> uint64_t.
+ * Code bases point immediately after the six-byte TCI block prefix. */
 UNICORN_EXPORT uc_err uc_embedder_tci_wasm_configure(uint32_t threshold, uc_tci_wasm_notice notice, uint32_t dispatcher);
 UNICORN_EXPORT const char *uc_embedder_tci_wasm_opname(uc_engine *engine, uint32_t opcode);
 /* Copied by the owner before compilation; version 1 has 22 wasm32 words:
@@ -20,7 +21,8 @@ UNICORN_EXPORT const char *uc_embedder_tci_wasm_opname(uc_engine *engine, uint32
  * alignment shift/mask/unaligned/natural and MMU mode count. Offsets are signed.
  */
 UNICORN_EXPORT const uint32_t *uc_embedder_tci_wasm_layout(uc_engine *engine);
-/* Version, TranslationBlock slot offset, contiguous u64 compiled/entry/chain counters. */
+/* Version 2: version, TranslationBlock slot and tc.ptr offsets, then the
+ * address of contiguous u64 compiled/entry/chain counters. */
 UNICORN_EXPORT const uint32_t *uc_embedder_tci_wasm_dispatch_layout(void);
 /* Version, precise-PC word address, env-relative uc pointer, uc-relative
  * normal-exit flag, env-relative ARM CF, uc-relative retry and CPU pointers,

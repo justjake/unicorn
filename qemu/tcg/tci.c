@@ -584,10 +584,11 @@ uintptr_t tcg_qemu_tb_exec(CPUArchState *env, uint8_t *tb_ptr)
             TranslationBlock *tb = (TranslationBlock *)(uintptr_t)tci_read_i32(&tb_ptr);
             tci_wasm_counters[TCI_WASM_ENTRIES]++;
             if (tb->tci_wasm_slot) {
-                typedef uint64_t (*Dispatch)(void *, uint32_t *, uint64_t *, uint32_t);
+                typedef uint64_t (*Dispatch)(void *, uint32_t *, uint64_t *, uint32_t, uint32_t);
                 uint64_t result;
                 tci_wasm_counters[TCI_WASM_COMPILED]++;
-                result = ((Dispatch)(uintptr_t)tci_wasm_dispatcher)(env, regs, jit_args, tb->tci_wasm_slot);
+                result = ((Dispatch)(uintptr_t)tci_wasm_dispatcher)(env, regs, jit_args, tb->tci_wasm_slot,
+                    (uintptr_t)tb->tc.ptr + 6);
                 if (!(uint32_t)result) {
                     ret = result >> 32;
                     goto exit;
