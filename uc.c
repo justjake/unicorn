@@ -2145,8 +2145,10 @@ void helper_uc_tracecode(int32_t size, uc_hook_idx index, void *handle,
         int64_t count = (size & 0x3fffffff) >> 2;
         if (uc->embedder_acct.budget >= count) {
             uc->embedder_acct.budget -= count;
-            uc->embedder_acct.ring[uc->embedder_acct.head++ & uc->embedder_acct.mask] =
-                ((uint64_t)(uint32_t)address << 32) | (uint64_t)count;
+            if (uc->embedder_acct.enabled == 1) {
+                uc->embedder_acct.ring[uc->embedder_acct.head++ & uc->embedder_acct.mask] =
+                    ((uint64_t)(uint32_t)address << 32) | (uint64_t)count;
+            }
             return;
         }
     }

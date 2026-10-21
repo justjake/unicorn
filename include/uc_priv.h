@@ -480,8 +480,9 @@ struct uc_struct {
     bool embedder_tb_slow;         // the filter asked for the block hook on every entry
     // embedder: budgeted block accounting (uc_embedder_accounting). A block translated
     // as "fast" (block hook size bit 30) whose instruction count fits in
-    // `budget` is entered without calling hooks: the count is subtracted and
-    // (start << 32 | count) is pushed to `ring[head++ & mask]`.
+    // `budget` is entered without calling hooks: the count is subtracted. With
+    // `enabled == 1`, (start << 32 | count) is also pushed to the ring; with
+    // `enabled == 2`, the ring is not written.
     struct {
         int64_t budget;
         uint64_t head;
