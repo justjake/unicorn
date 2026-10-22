@@ -1223,10 +1223,16 @@ static CPUTLBEntry *embedder_tlb_reload(CPUArchState *env, uintptr_t mmu_idx,
 {
     struct uc_struct *uc = env->uc;
     CPUTLBEntry *current = tlb_entry(env, mmu_idx, addr);
+    target_ulong comparator = tlb_read_ofs(current, tlb_off) & ~TLB_INVALID_MASK;
 
-    /* `entry` itself may be freed: compare the pointer, read `current`. */
-    if (current == entry &&
-        (tlb_read_ofs(current, tlb_off) & ~TLB_INVALID_MASK) == *tlb_addr) {
+    /*
+     * `entry` itself may be freed: compare the pointer, read `current`.
+     * An unmapped page's entry and a flushed entry share the all-ones
+     * comparator, so that value cannot show the entry is unchanged: a hook
+     * that mapped the page flushed it, leaving paddr -1. Refill instead.
+     */
+    if (current == entry && comparator == *tlb_addr &&
+        comparator != ((target_ulong)-1 & ~TLB_INVALID_MASK)) {
         return entry;
     }
     *index = tlb_index(env, mmu_idx, addr);
