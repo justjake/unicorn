@@ -2069,6 +2069,14 @@ uc_err uc_hook_del(uc_engine *uc, uc_hook hh)
         }
     }
 
+    // Deletion is deferred only for callbacks that delete hooks while
+    // emulation iterates the lists. Outside emulation, unlink at once:
+    // otherwise a processor that does not run keeps every deleted hook, and
+    // each later deletion and hooked access walks the growing lists.
+    if (uc->nested_level == 0) {
+        clear_deleted_hooks(uc);
+    }
+
     restore_jit_state(uc);
     return UC_ERR_OK;
 }
