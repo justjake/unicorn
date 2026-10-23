@@ -478,6 +478,9 @@ struct uc_struct {
     bool embedder_restart_request; // write hook: restart the storing instruction
     bool embedder_tb_thumb;        // Thumb state of the block being translated
     bool embedder_tb_slow;         // the filter asked for the block hook on every entry
+    // embedder: exit requests are tested inline at block entry only; guest
+    // loads and stores carry no exit check. Hook exits stay immediate.
+    bool embedder_block_exits;
     // embedder: budgeted block accounting (uc_embedder_accounting). A block translated
     // as "fast" (block hook size bit 30) whose instruction count fits in
     // `budget` is entered without calling hooks: the count is subtracted. With

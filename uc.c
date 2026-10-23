@@ -3301,6 +3301,21 @@ uc_err uc_embedder_set_parallel_cpus(uc_engine *uc, bool enabled)
     return UC_ERR_OK;
 }
 
+// embedder: test exit requests inline at block entry only (uc_priv.h
+// embedder_block_exits). Translated blocks change, so they are flushed.
+UNICORN_EXPORT
+uc_err uc_embedder_set_block_exits(uc_engine *uc, bool enabled)
+{
+    UC_INIT(uc);
+    if (uc->embedder_block_exits != enabled) {
+        uc->embedder_block_exits = enabled;
+        uc->cpu->cflags_next_tb = -1;
+        uc->tb_flush(uc);
+    }
+    restore_jit_state(uc);
+    return UC_ERR_OK;
+}
+
 // embedder: the budgeted block accounting record (uc_priv.h): the embedder reads
 // and writes budget and head directly; ring/mask/enabled/pause_requested are
 // set while no emulation runs. Layout: int64 budget, u64 head, u64 *ring,
