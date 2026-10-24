@@ -143,7 +143,9 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
             break;
         }
 
-        // embedder: the filter may ask for the block hook on every entry (4)
+        // embedder: the filter may ask for the block hook on every entry (4).
+        // Code-coherence watches are installed by the filter before execution,
+        // so this bit is reserved for observers that need each block entry.
         if (uc->embedder_insn_decision & 4) {
             uc->embedder_tb_slow = true;
         }
@@ -198,8 +200,8 @@ _end_loop:
         if (uc->embedder_insn_filter && uc->embedder_tb_thumb) {
             tcg_op->args[1] |= 0x80000000u;
         }
-        // embedder: bit 30 marks a block budgeted accounting may enter without
-        // hooks (ARM, every instruction filtered, no hook requested).
+        // embedder: bit 30 marks an ARM block budgeted accounting may enter
+        // without hooks after translation has installed any code-write watches.
         if (uc->embedder_insn_filter && !uc->embedder_tb_thumb && !uc->embedder_tb_slow) {
             tcg_op->args[1] |= 0x40000000u;
         }
