@@ -3279,10 +3279,11 @@ uc_err uc_embedder_request_restart(uc_engine *uc)
 // 4: stoppable Thumb code hooks publish ITSTATE and include failed conditions.
 // 8: accounting record includes the asynchronous pause_requested field.
 // 16: per-engine CF_PARALLEL selection for R-profile multi-core TCG.
+// 32: filter decision 3 replaces an ARM instruction with its code hook.
 UNICORN_EXPORT
 uint32_t uc_embedder_features(void)
 {
-    return 1 | 2 | 4 | 8 | 16;
+    return 1 | 2 | 4 | 8 | 16 | 32;
 }
 
 // Select parallel TCG translation semantics for this engine. The caller must

@@ -32,7 +32,9 @@ overhead and running the translation engine without a host JIT:
 
 - Page-scoped memory hooks and explicit physical-page watches.
 - ARM translation-time instruction filtering, bounded block retries and
-  instruction restarts at memory-hook boundaries.
+  instruction restarts at memory-hook boundaries. A filter may replace an
+  instruction with its code hook, which then performs it inside translated code
+  (`uc_embedder_features()` bit 32).
 - Budgeted block accounting with an embedder-owned trace ring.
 - Observation of mapped host-memory pages during TLB fills.
 - Stoppable Thumb instruction-entry hooks with synchronized ITSTATE, including

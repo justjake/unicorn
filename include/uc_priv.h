@@ -464,9 +464,12 @@ struct uc_struct {
     uint8_t *embedder_watch;
     // embedder: translation filter (ARM state). Returns 0 for no code hook, 1 for
     // the hook, 2 for the hook and the end of the translated block after the
-    // instruction. While installed, an instruction touching a page an
-    // unwatched memory hook covers is restarted once as the last instruction
-    // of a block, and its address ends later blocks (embedder_io_pcs).
+    // instruction, 3 for the hook in place of the instruction: the hook performs
+    // it (a failed condition is its no-op), no body is translated and the block
+    // ends after it. Without a covering code hook, 3 translates the body as 2.
+    // While installed, an instruction touching a page an unwatched memory hook
+    // covers is restarted once as the last instruction of a block, and its
+    // address ends later blocks (embedder_io_pcs).
     int (*embedder_insn_filter)(void *user, uint64_t pc, uint32_t insn);
     // embedder: called with the guest PC of an instruction about to be restarted;
     // the instructions before it in its block have executed, it has not.

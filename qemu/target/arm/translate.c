@@ -10954,6 +10954,11 @@ static void disas_arm_insn(DisasContext *s, unsigned int insn)
         gen_uc_tracecode(tcg_ctx, 4, UC_HOOK_CODE_IDX, s->uc, s->pc_curr);
         // the callback might want to stop emulation immediately
         check_exit_request(tcg_ctx);
+        // embedder: decision 3 means the hook performed the instruction
+        // (including its condition); translate no body. The block ends here.
+        if ((s->uc->embedder_insn_decision & 3) == 3) {
+            return;
+        }
     }
 
     if (cond == 0xf) {
