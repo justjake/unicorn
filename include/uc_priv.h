@@ -275,7 +275,12 @@ enum uc_embedder_exit_counter {
     UC_EXIT_DIRECT, UC_EXIT_RESTORE, UC_EXIT_NOEXC, UC_EXIT_ATOMIC,
     UC_EXIT_CHECK_RESTORE, UC_EXIT_CHECK_NO_SYNC, UC_EXIT_RETRY_JUMP,
     UC_EXIT_RESTART_REQUEST, UC_EXIT_RETRY_REQUEST, UC_EXIT_STOP_REQUEST,
-    UC_EXIT_NORMAL_CHECK, UC_EXIT_NORMAL_RETRY, UC_EXIT_COUNTER_COUNT
+    UC_EXIT_NORMAL_CHECK, UC_EXIT_NORMAL_RETRY,
+    // Translation diagnostics: every generated block, those generated with an
+    // instruction-count limit, whole-cache flushes and invalidated blocks.
+    UC_COUNT_TRANSLATIONS, UC_COUNT_LIMITED_TRANSLATIONS,
+    UC_COUNT_TRANSLATION_FLUSHES, UC_COUNT_TRANSLATION_INVALIDATIONS,
+    UC_EXIT_COUNTER_COUNT
 };
 
 /* Embedder-owned page flags, one conservative bit per observed host page.

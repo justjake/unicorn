@@ -1383,6 +1383,7 @@ static void do_tb_flush(CPUState *cpu, run_on_cpu_data tb_flush_count)
     page_flush_tb(cpu->uc);
 
     tcg_region_reset_all(cpu->uc->tcg_ctx);
+    cpu->uc->embedder_exit_counters[UC_COUNT_TRANSLATION_FLUSHES]++;
     /* XXX: flush processor icache at this point if cache flush is
        expensive */
     cpu->uc->tcg_ctx->tb_ctx.tb_flush_count = cpu->uc->tcg_ctx->tb_ctx.tb_flush_count + 1;
@@ -1501,6 +1502,7 @@ static void do_tb_phys_invalidate(TCGContext *tcg_ctx, TranslationBlock *tb, boo
     tb_page_addr_t phys_pc;
     bool code_gen_locked;
 
+    uc->embedder_exit_counters[UC_COUNT_TRANSLATION_INVALIDATIONS]++;
     assert_memory_lock();
     code_gen_locked = tb_exec_is_locked(uc);
     tb_exec_unlock(uc);
@@ -1731,6 +1733,10 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     cflags |= ((uint32_t)cpu->cluster_index) << CF_CLUSTER_SHIFT;
 
     max_insns = cflags & CF_COUNT_MASK;
+    cpu->uc->embedder_exit_counters[UC_COUNT_TRANSLATIONS]++;
+    if (max_insns != 0) {
+        cpu->uc->embedder_exit_counters[UC_COUNT_LIMITED_TRANSLATIONS]++;
+    }
     if (max_insns == 0) {
         max_insns = CF_COUNT_MASK;
     }
