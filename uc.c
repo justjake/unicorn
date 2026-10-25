@@ -1436,6 +1436,34 @@ uc_err uc_mem_map_ptr(uc_engine *uc, uint64_t address, uint64_t size,
     return res;
 }
 
+/* Retarget one complete externally owned physical RAM/ROM window while
+ * stopped. Preserve unrelated guest MMU translations: ordinary map/unmap APIs
+ * flush all soft TLBs, which incorrectly loses translations when the bus
+ * switches away the memory containing the active page table. */
+UNICORN_EXPORT
+uc_err uc_embedder_replace_backing(uc_engine *uc, uint64_t address, uint64_t size,
+                                   uint32_t perms, void *ptr)
+{
+    UC_INIT(uc);
+    MemoryRegion *mr = uc->memory_mapping(uc, address);
+    if (uc->nested_level || uc->snapshot_level || !ptr || !size ||
+        (perms & ~UC_PROT_ALL) || !mr || mr->addr != address ||
+        int128_get64(mr->size) != size || !mr->ram_block ||
+        !(mr->ram_block->flags & 1) || !uc->tcg_flush_physical_tlb) {
+        restore_jit_state(uc);
+        return UC_ERR_ARG;
+    }
+    mr->ram_block->host = ptr;
+    mr->perms = perms;
+    uc->embedder_preserve_tlb = true;
+    uc->readonly_mem(mr, (perms & UC_PROT_WRITE) == 0);
+    uc->embedder_preserve_tlb = false;
+    uc->tcg_flush_physical_tlb(uc, address, size);
+    uc->tb_flush(uc);
+    restore_jit_state(uc);
+    return UC_ERR_OK;
+}
+
 UNICORN_EXPORT
 uc_err uc_mmio_map(uc_engine *uc, uint64_t address, uint64_t size,
                    uc_cb_mmio_read_t read_cb, void *user_data_read,

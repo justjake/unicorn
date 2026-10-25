@@ -4,6 +4,7 @@
 #ifndef UNICORN_ARCH_POSTFIX
 #define UNICORN_ARCH_POSTFIX _x86_64
 #endif
+#define tcg_flush_physical_tlb tcg_flush_physical_tlb_x86_64
 #define embedder_restart_insn embedder_restart_insn_x86_64
 #define tcg_qemu_tb_exec tcg_qemu_tb_exec_x86_64
 #define tci_tb_ptr tci_tb_ptr_x86_64

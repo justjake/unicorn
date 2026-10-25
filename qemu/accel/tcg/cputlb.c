@@ -718,6 +718,35 @@ void tlb_reset_dirty(CPUState *cpu, ram_addr_t start1, ram_addr_t length)
     }
 }
 
+/* A physical bus decode change evicts translations into that window, not
+ * unrelated MMU entries. In particular, changing the page-table backing must
+ * not itself evict a cached instruction translation outside that window.
+ * MMIO entries also go: rebuilding the dispatch can renumber their sections.
+ * Called only with the engine stopped and external backing retained. */
+void tcg_flush_physical_tlb(struct uc_struct *uc, uint64_t address, uint64_t size)
+{
+    CPUArchState *env = uc->cpu->env_ptr;
+    for (int m = 0; m < NB_MMU_MODES; m++) {
+        CPUTLBDescFast *fast = &env_tlb(env)->f[m];
+        CPUTLBDesc *slow = &env_tlb(env)->d[m];
+        size_t count = tlb_n_entries(fast);
+        for (size_t i = 0; i < count + CPU_VTLB_SIZE; i++) {
+            CPUTLBEntry *entry = i < count ? &fast->table[i] : &slow->vtable[i - count];
+            if (tlb_entry_is_empty(entry)) {
+                continue;
+            }
+            bool mmio = (entry->addr_read != (target_ulong)-1 && (entry->addr_read & TLB_MMIO)) ||
+                        (entry->addr_write != (target_ulong)-1 && (entry->addr_write & TLB_MMIO));
+            if (mmio || (entry->paddr >= address && entry->paddr - address < size)) {
+                memset(entry, -1, sizeof(*entry));
+                if (i < count) {
+                    tlb_n_used_entries_dec(env, m);
+                }
+            }
+        }
+    }
+}
+
 void tlb_reset_dirty_by_vaddr(CPUState *cpu, target_ulong start1, target_ulong length)
 {
     struct uc_struct *uc = cpu->uc;

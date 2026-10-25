@@ -332,6 +332,7 @@ struct uc_struct {
     uc_target_page_init target_page;
     uc_softfloat_initialize softfloat_initialize;
     uc_tcg_flush_tlb tcg_flush_tlb;
+    void (*tcg_flush_physical_tlb)(struct uc_struct *, uint64_t, uint64_t);
     uc_invalidate_tb_t uc_invalidate_tb;
     uc_gen_tb_t uc_gen_tb;
     uc_tb_flush_t tb_flush;
@@ -458,6 +459,7 @@ struct uc_struct {
     bool skip_sync_pc_on_exit;
     // embedder: do not restore the guest PC before UC_HOOK_MEM_WRITE callbacks
     bool embedder_write_hook_no_pc_sync;
+    bool embedder_preserve_tlb;
     // embedder: memory hooks take the slow path only on pages a hook range covers
     bool embedder_page_hooks;
     /* Optional host-range observation, one bit per embedder-selected page.

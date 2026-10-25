@@ -11,6 +11,7 @@ void cpu_list_lock(void);
 void cpu_list_unlock(void);
 
 void tcg_flush_softmmu_tlb(struct uc_struct *uc);
+void tcg_flush_physical_tlb(struct uc_struct *uc, uint64_t address, uint64_t size);
 
 enum device_endian {
     DEVICE_NATIVE_ENDIAN,

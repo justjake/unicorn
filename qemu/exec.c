@@ -1494,7 +1494,9 @@ static void tcg_commit(MemoryListener *listener)
      */
     d = address_space_to_dispatch(cpuas->as);
     cpuas->memory_dispatch = d;
-    tlb_flush(cpuas->cpu);
+    if (!cpuas->cpu->uc->embedder_preserve_tlb) {
+        tlb_flush(cpuas->cpu);
+    }
 }
 
 static uint64_t unassigned_io_read(struct uc_struct *uc, void* opaque, hwaddr addr, unsigned size)
