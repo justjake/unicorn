@@ -115,11 +115,26 @@ static uc_err read_cp_reg(CPUARMState *env, uc_arm64_cp_reg *cp)
 static uc_err write_cp_reg(CPUARMState *env, uc_arm64_cp_reg *cp)
 {
     ARMCPU *cpu = ARM_CPU(env->uc->cpu);
+    /* Host configuration of the physical CPU identity. MPIDR has no writable
+     * CPUARMState field: falling through would write at fieldoffset zero. */
+    if (cp->op0 == 3 && cp->op1 == 0 && cp->crn == 0 && cp->crm == 0 &&
+        cp->op2 == 5) {
+        const uint64_t affinity_mask = UINT64_C(0xff00ffffff);
+        if (cp->val & ~(affinity_mask | (UINT64_C(1) << 31))) {
+            return UC_ERR_ARG;
+        }
+        cpu->mp_affinity = cp->val & affinity_mask;
+        return UC_ERR_OK;
+    }
     const ARMCPRegInfo *ri = get_arm_cp_reginfo(
         cpu->cp_regs, ENCODE_AA64_CP_REG(CP_REG_ARM64_SYSREG_CP, cp->crn,
                                          cp->crm, cp->op0, cp->op1, cp->op2));
 
     if (!ri) {
+        return UC_ERR_ARG;
+    }
+
+    if (ri->type & (ARM_CP_CONST | ARM_CP_NO_RAW)) {
         return UC_ERR_ARG;
     }
 
@@ -257,8 +272,7 @@ uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
             break;
         case UC_ARM64_REG_CP_REG:
             CHECK_REG_TYPE(uc_arm64_cp_reg);
-            ret = read_cp_reg(env, (uc_arm64_cp_reg *)value);
-            break;
+            return read_cp_reg(env, (uc_arm64_cp_reg *)value);
         case UC_ARM64_REG_FPCR:
             CHECK_REG_TYPE(uint32_t);
             *(uint32_t *)value = vfp_get_fpcr(env);
@@ -404,7 +418,7 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
             CHECK_REG_TYPE(uc_arm64_cp_reg);
             ret = write_cp_reg(env, (uc_arm64_cp_reg *)value);
             arm_rebuild_hflags(env);
-            break;
+            return ret;
         case UC_ARM64_REG_FPCR:
             CHECK_REG_TYPE(uint32_t);
             vfp_set_fpcr(env, *(uint32_t *)value);
