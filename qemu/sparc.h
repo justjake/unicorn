@@ -4,6 +4,7 @@
 #ifndef UNICORN_ARCH_POSTFIX
 #define UNICORN_ARCH_POSTFIX _sparc
 #endif
+#define embedder_restart_insn embedder_restart_insn_sparc
 #define tcg_qemu_tb_exec tcg_qemu_tb_exec_sparc
 #define tci_tb_ptr tci_tb_ptr_sparc
 #define helper_tci_hookcode helper_tci_hookcode_sparc

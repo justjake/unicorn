@@ -4,6 +4,7 @@
 #ifndef UNICORN_ARCH_POSTFIX
 #define UNICORN_ARCH_POSTFIX _ppc64
 #endif
+#define embedder_restart_insn embedder_restart_insn_ppc64
 #define tcg_qemu_tb_exec tcg_qemu_tb_exec_ppc64
 #define tci_tb_ptr tci_tb_ptr_ppc64
 #define helper_tci_hookcode helper_tci_hookcode_ppc64

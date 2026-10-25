@@ -4,6 +4,7 @@ CMD_PATH=$(realpath $0)
 SOURCE_DIR=$(dirname ${CMD_PATH})
 
 COMMON_SYMBOLS="
+embedder_restart_insn \
 tcg_qemu_tb_exec \
 tci_tb_ptr \
 helper_tci_hookcode \
