@@ -31,6 +31,27 @@
 #include "qemu/include/qemu/queue.h"
 #include "qemu-common.h"
 
+// Block budgeting follows the performance finding in Tal Shiri's X-Turbo
+// (https://github.com/tals/X-Turbo): avoid per-instruction count callbacks.
+// Debit translated instruction counts, retrying a short final block before
+// entering it. Instruction observers still run normally.
+static void hook_count_block_cb(struct uc_struct *uc, uint64_t address,
+                                uint32_t size, void *user_data)
+{
+    size_t remaining = uc->emu_count - uc->emu_counter;
+    uint32_t instructions = (size >> 16) & 0x3fff;
+    uc->count_block_instructions = 0;
+    if (!remaining) {
+        uc_emu_stop(uc);
+    } else if (instructions > remaining) {
+        uc->embedder_retry_limit = (uint32_t)remaining;
+    } else {
+        uc->emu_counter += instructions;
+        uc->count_block_address = address;
+        uc->count_block_instructions = instructions;
+    }
+}
+
 static void clear_deleted_hooks(uc_engine *uc);
 static uc_err uc_snapshot(uc_engine *uc);
 static uc_err uc_restore_latest_snapshot(uc_engine *uc);
@@ -1196,8 +1217,14 @@ uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
     uc->stop_request = false;
 
     uc->emu_count = count;
-    // remove count hook if counting isn't necessary
-    if (count <= 0 && uc->count_hook != 0) {
+    // A translation-filter owner manages its own instruction entries. Keep
+    // the legacy counter there; ordinary A64 runs use fixed-width TB counts.
+    bool block_count = uc->arch == UC_ARCH_ARM64 &&
+                       !uc->embedder_insn_filter && !uc->embedder_acct.enabled;
+    uc->count_block_instructions = 0;
+    // Remove the old counter when changing accounting mode as well.
+    if (uc->count_hook != 0 &&
+        (count == 0 || block_count != uc->count_hook_is_block)) {
         uc_hook_del(uc, uc->count_hook);
         uc->count_hook = 0;
 
@@ -1211,7 +1238,10 @@ uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
         // so instead of appending, we must insert the hook at the begin
         // of the hook list
         uc->hook_insert = 1;
-        err = uc_hook_add(uc, &uc->count_hook, UC_HOOK_CODE, hook_count_cb,
+        uc->count_hook_is_block = block_count;
+        err = uc_hook_add(uc, &uc->count_hook,
+                          block_count ? UC_HOOK_BLOCK : UC_HOOK_CODE,
+                          block_count ? hook_count_block_cb : hook_count_cb,
                           NULL, 1, 0);
         // restore to append mode for uc_hook_add()
         uc->hook_insert = 0;
@@ -2169,6 +2199,13 @@ void helper_uc_tracecode(int32_t size, uc_hook_idx index, void *handle,
     //     uc->set_pc(uc, address);
     // }
 
+    // A64's internal counter receives the translated instruction count in
+    // bits 16..29. Ordinary block observers continue to receive byte sizes.
+    uint32_t count_size = size;
+    if (index == UC_HOOK_BLOCK_IDX && uc->count_hook && uc->count_hook_is_block) {
+        size &= 0xc000ffffu;
+    }
+
     // the last callback may already asked to stop emulation
     if (uc->stop_request && !not_allow_stop) {
         return;
@@ -2190,7 +2227,9 @@ void helper_uc_tracecode(int32_t size, uc_hook_idx index, void *handle,
     // embedder: budgeted block accounting (see uc_priv.h embedder_acct)
     if (index == UC_HOOK_BLOCK_IDX && (size & 0x40000000) && uc->embedder_acct.enabled) {
         int64_t count = (size & 0x3fffffff) >> 2;
-        if (uc->embedder_acct.budget >= count) {
+        if (uc->embedder_acct.budget >= count &&
+            (uc->embedder_acct.enabled != 1 ||
+             (address >= 0 && (uint64_t)address + (size & 0x3fffffff) <= (UINT64_C(1) << 32)))) {
             uc->embedder_acct.budget -= count;
             if (uc->embedder_acct.enabled == 1) {
                 uc->embedder_acct.ring[uc->embedder_acct.head++ & uc->embedder_acct.mask] =
@@ -2220,7 +2259,10 @@ void helper_uc_tracecode(int32_t size, uc_hook_idx index, void *handle,
 
         if (HOOK_BOUND_CHECK(hook, (uint64_t)address)) {
             JIT_CALLBACK_GUARD(((uc_cb_hookcode_t)hook->callback)(
-                uc, address, size, hook->user_data));
+                uc, address,
+                (index == UC_HOOK_BLOCK_IDX && hook == (struct hook *)uc->count_hook
+                 && uc->count_hook_is_block) ? count_size : size,
+                hook->user_data));
         }
 
         // the last callback may already asked to stop emulation
@@ -3308,10 +3350,11 @@ uc_err uc_embedder_request_restart(uc_engine *uc)
 // 8: accounting record includes the asynchronous pause_requested field.
 // 16: per-engine CF_PARALLEL selection for R-profile multi-core TCG.
 // 32: filter decision 3 replaces an ARM instruction with its code hook.
+// 64: the A64 frontend supports the translation filter and block accounting.
 UNICORN_EXPORT
 uint32_t uc_embedder_features(void)
 {
-    return 1 | 2 | 4 | 8 | 16 | 32;
+    return 1 | 2 | 4 | 8 | 16 | 32 | 64;
 }
 
 // Select parallel TCG translation semantics for this engine. The caller must

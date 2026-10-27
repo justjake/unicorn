@@ -390,6 +390,9 @@ struct uc_struct {
 
     // hook to count number of instructions for uc_emu_start()
     uc_hook count_hook;
+    bool count_hook_is_block;
+    uint64_t count_block_address;
+    uint32_t count_block_instructions;
 
     size_t emu_counter; // current counter of uc_emu_start()
     size_t emu_count;   // save counter of uc_emu_start()

@@ -274,6 +274,9 @@ static int encode_search(struct uc_struct *uc, TranslationBlock *tb, uint8_t *bl
     return p - block;
 }
 
+static void count_restart_tail(CPUState *cpu, TranslationBlock *tb,
+                               uintptr_t retaddr);
+
 /* The cpu state corresponding to 'searched_pc' is restored.
  * When reset_icount is true, current TB will be interrupted and
  * icount should be recalculated.
@@ -1944,6 +1947,7 @@ tb_invalidate_phys_page_range__locked(struct uc_struct *uc, struct page_collecti
                  * restore the CPU state.
                  */
                 current_tb_modified = true;
+                count_restart_tail(cpu, current_tb, retaddr);
                 cpu_restore_state_from_tb(cpu, current_tb, retaddr, true);
                 cpu_get_tb_cpu_state(env, &current_pc, &current_cs_base,
                                      &current_flags);
@@ -2126,6 +2130,22 @@ static int embedder_insn_index(TranslationBlock *tb, uintptr_t retaddr)
     return -1;
 }
 
+// Return the not-yet-entered tail when a helper recompiles an A64 block.
+// The counter's next block entry will debit the restarted instruction.
+static void count_restart_tail(CPUState *cpu, TranslationBlock *tb,
+                               uintptr_t retaddr)
+{
+    struct uc_struct *uc = cpu->uc;
+    if (uc->count_hook && uc->count_hook_is_block &&
+        uc->count_block_instructions && uc->count_block_address == tb->pc) {
+        int index = embedder_insn_index(tb, retaddr);
+        if (index >= 0 && index < uc->count_block_instructions) {
+            uc->emu_counter -= uc->count_block_instructions - index;
+            uc->count_block_instructions = 0;
+        }
+    }
+}
+
 /* embedder: unless it already is the last instruction of its block, restart the
    instruction executing at retaddr as a block of its own. remember: also end
    later translations at it and retranslate the block it was found in. The
@@ -2145,6 +2165,7 @@ void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember)
     if (index < 0 || index == tb->icount - 1) {
         return;
     }
+    count_restart_tail(cpu, tb, retaddr);
     cpu_restore_state_from_tb(cpu, tb, retaddr, true);
     pc = (uc->get_pc ? uc->get_pc(uc) : 0) & ~(uint64_t)1;
     if (remember) {
@@ -2178,6 +2199,7 @@ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
         cpu_abort(cpu, "cpu_io_recompile: could not find TB for pc=%p",
                   (void *)retaddr);
     }
+    count_restart_tail(cpu, tb, retaddr);
     cpu_restore_state_from_tb(cpu, tb, retaddr, true);
 
     /* On MIPS and SH, delay slot instructions can only be restarted if

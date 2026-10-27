@@ -14512,9 +14512,14 @@ static void disas_a64_insn(CPUARMState *env, DisasContext *s)
 
     s->insn = insn;
     s->base.pc_next += 4;
+    // Embedder decisions have the same meaning as in the A32 frontend.
+    s->uc->embedder_insn_decision = s->uc->embedder_insn_filter
+        ? s->uc->embedder_insn_filter(s->uc->embedder_filter_user,
+                                     s->pc_curr, insn) : 1;
 
     // Unicorn: trace this instruction on request
-    if (HOOK_EXISTS_BOUNDED(env->uc, UC_HOOK_CODE, s->pc_curr)) {
+    if ((s->uc->embedder_insn_decision & 3) != 0 &&
+        HOOK_EXISTS_BOUNDED(env->uc, UC_HOOK_CODE, s->pc_curr)) {
 
         // Sync PC in advance
         TCGContext *tcg_ctx = env->uc->tcg_ctx;
@@ -14523,6 +14528,9 @@ static void disas_a64_insn(CPUARMState *env, DisasContext *s)
         gen_uc_tracecode(tcg_ctx, 4, UC_HOOK_CODE_IDX, env->uc, s->pc_curr);
         // the callback might want to stop emulation immediately
         check_exit_request(tcg_ctx);
+        if ((s->uc->embedder_insn_decision & 3) == 3) {
+            return;
+        }
     }
 
     s->fp_access_checked = false;
@@ -14633,6 +14641,7 @@ static void aarch64_tr_init_disas_context(DisasContextBase *dcbase,
     dc->secure_routed_to_el3 = arm_feature(env, ARM_FEATURE_EL3) &&
                                !arm_el_is_aa64(env, 3);
     dc->thumb = 0;
+    uc->embedder_tb_thumb = false;
     dc->sctlr_b = 0;
     dc->be_data = FIELD_EX32(tb_flags, TBFLAG_ANY, BE_DATA) ? MO_BE : MO_LE;
     dc->condexec_mask = 0;

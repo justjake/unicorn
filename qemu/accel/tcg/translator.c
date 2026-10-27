@@ -138,17 +138,17 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
         ops->translate_insn(db, cpu);
         // tcg_dump_ops(tcg_ctx, false, "insn translate");
 
-        /* Stop translation if translate_insn so indicated.  */
-        if (db->is_jmp != DISAS_NEXT) {
-            break;
-        }
-
         // embedder: the filter may ask for the block hook on every entry (4).
         // Code-coherence watches are installed by the filter before execution,
         // so this bit is reserved for observers that need each block entry.
         if (uc->embedder_insn_decision & 4) {
             uc->embedder_tb_slow = true;
         }
+        /* Stop translation if translate_insn so indicated.  */
+        if (db->is_jmp != DISAS_NEXT) {
+            break;
+        }
+
         // embedder: a hooked special or replaced instruction or a device access
         // ends its block
         if (uc->embedder_insn_filter && ((uc->embedder_insn_decision & 3) >= 2 ||
@@ -195,6 +195,13 @@ _end_loop:
         }
 
         tcg_op->args[1] = db->tb->size;
+        // The A64 uc_emu_start counter needs actual instruction entries,
+        // including a lower EL's variable-width A32/Thumb blocks. The helper
+        // strips this metadata before calling ordinary block observers.
+        if (uc->count_hook && uc->count_hook_is_block) {
+            assert(db->tb->size <= 0xffff && db->tb->icount <= 0x3fff);
+            tcg_op->args[1] |= db->tb->icount << 16;
+        }
         // embedder: with a translation filter installed, bit 31 of the block
         // hook's size reports Thumb state, so the hook need not read CPSR.
         if (uc->embedder_insn_filter && uc->embedder_tb_thumb) {

@@ -665,7 +665,59 @@ static void test_arm64_pc_guarantee(void)
     OK(uc_close(uc));
 }
 
-TEST_LIST = {{"test_arm64_until", test_arm64_until},
+static void count_entries(uc_engine *uc, uint64_t address, uint32_t size,
+                          void *user_data)
+{
+    unsigned *entries = user_data;
+    TEST_CHECK(size == 4);
+    (*entries)++;
+}
+
+static void count_blocks(uc_engine *uc, uint64_t address, uint32_t size,
+                         void *user_data)
+{
+    // Internal instruction-count metadata must not escape to user hooks.
+    TEST_CHECK(size > 0 && size <= 20 && size % 4 == 0);
+}
+
+static void test_arm64_block_instruction_budget(void)
+{
+    uc_engine *uc;
+    uc_hook instruction_hook, block_hook;
+    uint64_t pc, x0;
+    unsigned entries = 0;
+    uint32_t code[] = {LEINT32(0x91000400), LEINT32(0x91000400),
+                       LEINT32(0x91000400), LEINT32(0x91000400),
+                       LEINT32(0x17fffffc)}; // four ADDs; B to the first ADD.
+    uc_common_setup(&uc, UC_ARCH_ARM64, UC_MODE_ARM, (const char *)code,
+                    sizeof(code), UC_CPU_ARM64_A53);
+    OK(uc_hook_add(uc, &instruction_hook, UC_HOOK_CODE, count_entries,
+                   &entries, 1, 0));
+    OK(uc_hook_add(uc, &block_hook, UC_HOOK_BLOCK, count_blocks, NULL, 1, 0));
+    for (unsigned budget = 1; budget < 37; ++budget) {
+        entries = 0;
+        x0 = 0;
+        OK(uc_reg_write(uc, UC_ARM64_REG_X0, &x0));
+        OK(uc_emu_start(uc, code_start, 0, 1000000, budget));
+        OK(uc_reg_read(uc, UC_ARM64_REG_PC, &pc));
+        OK(uc_reg_read(uc, UC_ARM64_REG_X0, &x0));
+        TEST_CHECK(pc == code_start + (budget % 5) * 4);
+        TEST_CHECK(x0 == budget - budget / 5);
+        TEST_CHECK(entries == budget);
+    }
+    // Switch counter modes without changing the address exit.
+    OK(uc_emu_start(uc, code_start, code_start + 12, 1000000, 2));
+    OK(uc_emu_start(uc, code_start, code_start + 12, 1000000, 0));
+    OK(uc_reg_read(uc, UC_ARM64_REG_PC, &pc));
+    TEST_CHECK(pc == code_start + 12);
+    OK(uc_emu_start(uc, code_start, code_start + 12, 1000000, 1));
+    OK(uc_reg_read(uc, UC_ARM64_REG_PC, &pc));
+    TEST_CHECK(pc == code_start + 4);
+    OK(uc_close(uc));
+}
+
+TEST_LIST = {{"test_arm64_block_instruction_budget", test_arm64_block_instruction_budget},
+             {"test_arm64_until", test_arm64_until},
              {"test_arm64_code_patching", test_arm64_code_patching},
              {"test_arm64_code_patching_count", test_arm64_code_patching_count},
              {"test_arm64_v8_pac", test_arm64_v8_pac},
