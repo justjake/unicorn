@@ -521,8 +521,10 @@ struct uc_context {
     bool ramblock_freed;  // wheter there was a some ramblock freed
     RAMBlock *last_block; // The last element of the ramblock list
     FlatView *fv;         // The current flatview of the memory
-    char data[0];         // context
+    QEMU_ALIGN(16, char data[0]); // CPU state copies require 16-byte alignment.
 };
+
+QEMU_BUILD_BUG_ON(offsetof(struct uc_context, data) % 16 != 0);
 
 // We have to support 32bit system so we can't hold uint64_t on void*
 static inline void uc_add_exit(uc_engine *uc, uint64_t addr)

@@ -53,6 +53,14 @@ cmake --build build
 ctest --test-dir build -R '^test_arm$' --output-on-failure
 ```
 
+The ARM context regression also runs against the optimized host JIT:
+
+```sh
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release -DUNICORN_ARCH=arm -DUNICORN_BUILD_TESTS=ON
+cmake --build build-release --target test_arm
+./build-release/test_arm test_arm_context_repeated_restore
+```
+
 
 License
 -------

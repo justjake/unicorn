@@ -850,6 +850,34 @@ static void test_arm_context_save(void)
     OK(uc_close(uc2));
 }
 
+static void test_arm_context_repeated_restore(void)
+{
+    uc_engine *uc;
+    uc_context *ctx;
+    char code[] = "\x01\x00\x80\xe2"; // add r0, r0, #1
+    uint32_t value = 41;
+    uint32_t pc = (uint32_t)code_start;
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_ARM, code, sizeof(code) - 1,
+                    UC_CPU_ARM_CORTEX_R5F);
+    OK(uc_reg_write(uc, UC_ARM_REG_R0, &value));
+    OK(uc_reg_write(uc, UC_ARM_REG_PC, &pc));
+    OK(uc_context_alloc(uc, &ctx));
+    OK(uc_context_save(uc, ctx));
+    for (int i = 0; i < 64; i++) {
+        OK(uc_emu_start(uc, code_start, code_start + sizeof(code) - 1, 0, 0));
+        OK(uc_reg_read(uc, UC_ARM_REG_R0, &value));
+        TEST_CHECK(value == 42);
+        OK(uc_context_restore(uc, ctx));
+        OK(uc_reg_read(uc, UC_ARM_REG_R0, &value));
+        TEST_CHECK(value == 41);
+        OK(uc_reg_read(uc, UC_ARM_REG_PC, &pc));
+        TEST_CHECK(pc == code_start);
+    }
+    OK(uc_context_free(ctx));
+    OK(uc_close(uc));
+}
+
 static void test_arm_thumb2(void)
 {
     uc_engine *uc;
@@ -1130,6 +1158,7 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_switch_endian", test_arm_switch_endian},
              {"test_armeb_ldrb", test_armeb_ldrb},
              {"test_arm_context_save", test_arm_context_save},
+             {"test_arm_context_repeated_restore", test_arm_context_repeated_restore},
              {"test_arm_thumb2", test_arm_thumb2},
              {"test_armeb_be32_thumb2", test_armeb_be32_thumb2},
              {"test_arm_mem_hook_read_write", test_arm_mem_hook_read_write},
