@@ -5,6 +5,7 @@
 #define UNICORN_ARCH_POSTFIX _riscv64
 #endif
 #define tcg_flush_physical_tlb tcg_flush_physical_tlb_riscv64
+#define tcg_rearm_embedder_backings tcg_rearm_embedder_backings_riscv64
 #define embedder_restart_insn embedder_restart_insn_riscv64
 #define tcg_qemu_tb_exec tcg_qemu_tb_exec_riscv64
 #define tci_tb_ptr tci_tb_ptr_riscv64

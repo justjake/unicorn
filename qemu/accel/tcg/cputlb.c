@@ -1096,6 +1096,47 @@ static inline ram_addr_t qemu_ram_addr_from_host_nofail(struct uc_struct *uc, vo
     return ram_addr;
 }
 
+void tcg_rearm_embedder_backings(struct uc_struct *uc)
+{
+    if (!uc->cpu) {
+        return;
+    }
+
+    CPUArchState *env = uc->cpu->env_ptr;
+    for (int mmu_idx = 0; mmu_idx < NB_MMU_MODES; mmu_idx++) {
+        CPUTLBDescFast *fast = &env_tlb(env)->f[mmu_idx];
+        CPUTLBDesc *slow = &env_tlb(env)->d[mmu_idx];
+        size_t fast_count = tlb_n_entries(fast);
+
+        for (size_t i = 0; i < fast_count + CPU_VTLB_SIZE; i++) {
+            CPUTLBEntry *entry = i < fast_count ? &fast->table[i]
+                                                : &slow->vtable[i - fast_count];
+            uintptr_t write = entry->addr_write;
+            if (write & (TLB_INVALID_MASK | TLB_MMIO | TLB_DISCARD_WRITE | TLB_NOTDIRTY)) {
+                continue;
+            }
+
+            uintptr_t backing = (write & TARGET_PAGE_MASK) + entry->addend;
+            for (size_t observer_index = 0;
+                 observer_index < uc->embedder_observer_count; observer_index++) {
+                const uc_backing_observer *observer =
+                    &uc->embedder_observers[observer_index];
+                if (backing < observer->base || backing - observer->base >= observer->size) {
+                    continue;
+                }
+
+                size_t page = (backing - observer->base) >> observer->shift;
+                uint64_t bit = UINT64_C(1) << (page & 63);
+                if (__atomic_load_n(&observer->pending_rearm[page >> 6],
+                                    __ATOMIC_RELAXED) & bit) {
+                    entry->addr_write = write | TLB_NOTDIRTY;
+                }
+                break;
+            }
+        }
+    }
+}
+
 /*
  * Note: tlb_fill() can trigger a resize of the TLB. This means that all of the
  * caller's prior references to the TLB table (e.g. CPUTLBEntry pointers) must
@@ -1341,6 +1382,28 @@ static void notdirty_write(CPUState *cpu, vaddr mem_vaddr, unsigned size,
 #endif
     ram_addr_t ram_addr = mem_vaddr + iotlbentry->addr;
     MemoryRegion *mr = cpu->uc->memory_mapping(cpu->uc, tlbe->paddr | (mem_vaddr & ~TARGET_PAGE_MASK));
+    uintptr_t backing = (uintptr_t)mem_vaddr + tlbe->addend;
+
+    for (size_t i = 0; i < cpu->uc->embedder_observer_count; i++) {
+        const uc_backing_observer *observer = &cpu->uc->embedder_observers[i];
+        uintptr_t start = backing > observer->base ? backing : observer->base;
+        uintptr_t end = backing + size;
+        uintptr_t observer_end = observer->base + observer->size;
+        if (end > observer_end)
+            end = observer_end;
+        if (start >= end)
+            continue;
+        size_t first = (start - observer->base) >> observer->shift;
+        size_t last = (end - observer->base - 1) >> observer->shift;
+        for (size_t page = first; page <= last; page++) {
+            uint64_t bit = UINT64_C(1) << (page & 63);
+            if (__atomic_load_n(&observer->watched[page >> 6], __ATOMIC_RELAXED) & bit) {
+                __atomic_fetch_add(&observer->versions[page], 1, __ATOMIC_RELAXED);
+                __atomic_fetch_or(&observer->pending_rearm[page >> 6], bit, __ATOMIC_RELAXED);
+            }
+        }
+        break;
+    }
 
     if (mr && (mr->perms & UC_PROT_EXEC) != 0) {
         struct page_collection *pages
