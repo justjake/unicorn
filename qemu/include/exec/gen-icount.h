@@ -32,6 +32,14 @@ static inline void gen_io_end(TCGContext *tcg_ctx)
 
 static inline void gen_tb_start(TCGContext *tcg_ctx, TranslationBlock *tb)
 {
+    tcg_ctx->embedder_retired_insn = NULL;
+    if (tcg_ctx->uc->embedder_instruction_counter) {
+        TCGv_i32 active = tcg_const_i32(tcg_ctx, 0);
+        tcg_gen_st8_i32(tcg_ctx, active, tcg_ctx->cpu_env,
+                        offsetof(ArchCPU, parent_obj.embedder_retired_block_active) -
+                        offsetof(ArchCPU, env));
+        tcg_temp_free_i32(tcg_ctx, active);
+    }
     if (tcg_ctx->uc->embedder_block_exits) {
         // embedder: the QEMU block-entry test, without a helper call. A
         // requested exit leaves before the block runs; its PC is the block's.
@@ -43,19 +51,40 @@ static inline void gen_tb_start(TCGContext *tcg_ctx, TranslationBlock *tb)
         tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_LT, count, 0,
                             tcg_ctx->embedder_exitreq_label);
         tcg_temp_free_i32(tcg_ctx, count);
-        return;
+    } else {
+        TCGv_ptr puc = tcg_const_ptr(tcg_ctx, tcg_ctx->uc);
+        TCGv_i32 tmp = tcg_const_i32(tcg_ctx, 0);
+        // Unicorn:
+        //    We CANT'T use brcondi_i32 here or we will fail liveness analysis
+        //    because it marks the end of BB
+        if (tcg_ctx->delay_slot_flag != NULL) {
+            tcg_gen_mov_i32(tcg_ctx, tmp, tcg_ctx->delay_slot_flag);
+        }
+        gen_helper_check_exit_request(tcg_ctx, puc, tmp);
+        tcg_temp_free_i32(tcg_ctx, tmp);
+        tcg_temp_free_ptr(tcg_ctx, puc);
     }
-    TCGv_ptr puc = tcg_const_ptr(tcg_ctx, tcg_ctx->uc);
-    TCGv_i32 tmp = tcg_const_i32(tcg_ctx, 0);
-    // Unicorn:
-    //    We CANT'T use brcondi_i32 here or we will fail liveness analysis
-    //    because it marks the end of BB
-    if (tcg_ctx->delay_slot_flag != NULL) {
-        tcg_gen_mov_i32(tcg_ctx, tmp, tcg_ctx->delay_slot_flag);
+
+    if (tcg_ctx->uc->embedder_instruction_counter &&
+        !uc_addr_is_exit(tcg_ctx->uc, tb->pc)) {
+        TCGv_i32 active = tcg_const_i32(tcg_ctx, 1);
+        tcg_gen_st8_i32(tcg_ctx, active, tcg_ctx->cpu_env,
+                        offsetof(ArchCPU, parent_obj.embedder_retired_block_active) -
+                        offsetof(ArchCPU, env));
+        tcg_temp_free_i32(tcg_ctx, active);
+
+        TCGv_i64 retired = tcg_temp_new_i64(tcg_ctx);
+        TCGv_i64 amount = tcg_temp_new_i64(tcg_ctx);
+        intptr_t offset = offsetof(ArchCPU, parent_obj.embedder_retired_instructions) -
+                          offsetof(ArchCPU, env);
+        tcg_gen_ld_i64(tcg_ctx, retired, tcg_ctx->cpu_env, offset);
+        tcg_gen_movi_i64(tcg_ctx, amount, 0);
+        tcg_ctx->embedder_retired_insn = tcg_last_op(tcg_ctx);
+        tcg_gen_add_i64(tcg_ctx, retired, retired, amount);
+        tcg_gen_st_i64(tcg_ctx, retired, tcg_ctx->cpu_env, offset);
+        tcg_temp_free_i64(tcg_ctx, amount);
+        tcg_temp_free_i64(tcg_ctx, retired);
     }
-    gen_helper_check_exit_request(tcg_ctx, puc, tmp);
-    tcg_temp_free_i32(tcg_ctx, tmp);
-    tcg_temp_free_ptr(tcg_ctx, puc);
 }
 
 static inline void gen_tb_end(TCGContext *tcg_ctx, TranslationBlock *tb, int num_insns)
@@ -69,10 +98,21 @@ static inline void gen_tb_end(TCGContext *tcg_ctx, TranslationBlock *tb, int num
          * the actual insn count.  */
         tcg_set_insn_param(tcg_ctx->icount_start_insn, 1, num_insns);
     }
+    if (tcg_ctx->embedder_retired_insn) {
+        tcg_set_insn_param(tcg_ctx->embedder_retired_insn, 1, num_insns);
+        tcg_ctx->embedder_retired_insn = NULL;
+    }
 
     if (tcg_ctx->embedder_exitreq_label) {
         gen_set_label(tcg_ctx, tcg_ctx->embedder_exitreq_label);
         tcg_ctx->embedder_exitreq_label = NULL;
+    }
+    if (tcg_ctx->uc->embedder_instruction_counter) {
+        TCGv_i32 active = tcg_const_i32(tcg_ctx, 0);
+        tcg_gen_st8_i32(tcg_ctx, active, tcg_ctx->cpu_env,
+                        offsetof(ArchCPU, parent_obj.embedder_retired_block_active) -
+                        offsetof(ArchCPU, env));
+        tcg_temp_free_i32(tcg_ctx, active);
     }
     tcg_gen_exit_tb(tcg_ctx, tb, TB_EXIT_REQUESTED);
 }

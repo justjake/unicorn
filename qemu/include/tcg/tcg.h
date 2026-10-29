@@ -690,6 +690,7 @@ struct TCGContext {
     TBContext tb_ctx;
     /* qemu/include/exec/gen-icount.h */
     TCGOp *icount_start_insn;
+    TCGOp *embedder_retired_insn;
     // embedder: block-entry exit request target (uc->embedder_block_exits)
     TCGLabel *embedder_exitreq_label;
     /* qemu/tcg/tcg.c */

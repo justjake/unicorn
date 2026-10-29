@@ -3351,10 +3351,11 @@ uc_err uc_embedder_request_restart(uc_engine *uc)
 // 16: per-engine CF_PARALLEL selection for R-profile multi-core TCG.
 // 32: filter decision 3 replaces an ARM instruction with its code hook.
 // 64: the A64 frontend supports the translation filter and block accounting.
+// 128: translated blocks count guest instructions in CPUState.
 UNICORN_EXPORT
 uint32_t uc_embedder_features(void)
 {
-    return 1 | 2 | 4 | 8 | 16 | 32 | 64;
+    return 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128;
 }
 
 // Select parallel TCG translation semantics for this engine. The caller must
@@ -3373,8 +3374,8 @@ uc_err uc_embedder_set_parallel_cpus(uc_engine *uc, bool enabled)
     return UC_ERR_OK;
 }
 
-// embedder: test exit requests inline at block entry only (uc_priv.h
-// embedder_block_exits). Translated blocks change, so they are flushed.
+// embedder: test exit requests inline at block entry and after memory accesses
+// (uc_priv.h embedder_block_exits). Translated blocks change, so they are flushed.
 UNICORN_EXPORT
 uc_err uc_embedder_set_block_exits(uc_engine *uc, bool enabled)
 {
@@ -3386,6 +3387,39 @@ uc_err uc_embedder_set_block_exits(uc_engine *uc, bool enabled)
     }
     restore_jit_state(uc);
     return UC_ERR_OK;
+}
+
+// Enable exact translated-block instruction counts. Recompile cached blocks
+// because the counter update is emitted into their TCG prologues.
+UNICORN_EXPORT
+uc_err uc_embedder_set_instruction_counter(uc_engine *uc, bool enabled)
+{
+    UC_INIT(uc);
+    if (uc->embedder_instruction_counter != enabled) {
+        uc->embedder_instruction_counter = enabled;
+        uc->cpu->embedder_retired_instructions = 0;
+        uc->cpu->embedder_retired_block_active = false;
+        uc->cpu->cflags_next_tb = -1;
+        uc->tb_flush(uc);
+    }
+    restore_jit_state(uc);
+    return UC_ERR_OK;
+}
+
+UNICORN_EXPORT
+uc_err uc_embedder_reset_instruction_counter(uc_engine *uc)
+{
+    UC_INIT(uc);
+    uc->cpu->embedder_retired_instructions = 0;
+    uc->cpu->embedder_retired_block_active = false;
+    restore_jit_state(uc);
+    return UC_ERR_OK;
+}
+
+UNICORN_EXPORT
+uint64_t uc_embedder_instruction_counter(uc_engine *uc)
+{
+    return uc->cpu->embedder_retired_instructions;
 }
 
 // embedder: the budgeted block accounting record (uc_priv.h): the embedder reads

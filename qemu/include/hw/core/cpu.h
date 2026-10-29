@@ -267,6 +267,9 @@ struct CPUState {
     bool in_exclusive_context;
     /* Per-engine parallel TCG mode; selects barriers and WFE/YIELD semantics. */
     bool embedder_parallel_cpus;
+    /* Instructions credited at translated block entry, corrected on restore. */
+    uint64_t embedder_retired_instructions;
+    bool embedder_retired_block_active;
     uint32_t cflags_next_tb;
     /* updates protected by BQL */
     uint32_t interrupt_request;

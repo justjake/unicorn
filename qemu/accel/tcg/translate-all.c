@@ -315,6 +315,11 @@ static int cpu_restore_state_from_tb(CPUState *cpu, TranslationBlock *tb,
            and shift if to the number of actually executed instructions */
         cpu_neg(cpu)->icount_decr.u16.low += num_insns - i;
     }
+    if (reset_icount && cpu->uc->embedder_instruction_counter &&
+        cpu->embedder_retired_block_active) {
+        cpu->embedder_retired_instructions -= num_insns - i;
+        cpu->embedder_retired_block_active = false;
+    }
     restore_state_to_opc(env, tb, data);
 
     return 0;
