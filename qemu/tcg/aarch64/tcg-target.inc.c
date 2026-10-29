@@ -2487,6 +2487,14 @@ static void tcg_out_vec_op(TCGContext *s, TCGOpcode opc,
 
 int tcg_can_emit_vec_op(TCGContext *tcg_ctx, TCGOpcode opc, TCGType type, unsigned vece)
 {
+    /* AdvSIMD integer operations with 64-bit elements require two lanes.
+     * A V64 holds only one: use the scalar/helper expansion instead of
+     * emitting the reserved Q=0, size=3 vector instruction encodings.
+     */
+    if (type == TCG_TYPE_V64 && vece == MO_64) {
+        return 0;
+    }
+
     switch (opc) {
     case INDEX_op_add_vec:
     case INDEX_op_sub_vec:

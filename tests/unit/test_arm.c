@@ -1134,7 +1134,61 @@ static void test_arm_svc_hvc_syndrome(void)
     OK(uc_close(uc));
 }
 
+static void test_arm_neon_single_lane_64_shift(void)
+{
+    uc_engine *uc;
+    // vshl.u64 d0, d0, d1; vshl.s64 d2, d2, d3;
+    // vshl.u64 q2, q2, q3. Exercise both one-lane and two-lane lowering.
+    const char code[] = "\x00\x04\x31\xf3\x02\x24\x33\xf2\x44\x44\x36\xf3";
+    const int shifts[] = {-65, -64, -63, -1, 0, 1, 63, 64, 65};
+    const uint64_t source = UINT64_C(0x923456789abcdef0);
+    uc_arm_cp_reg cpacr = {.cp = 15, .crn = 1, .opc2 = 2,
+                          .val = 0xf00000};
+    uint32_t fpexc = 1u << 30;
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_ARM, code, sizeof(code) - 1,
+                    UC_CPU_ARM_CORTEX_A15);
+    OK(uc_reg_write(uc, UC_ARM_REG_CP_REG, &cpacr));
+    OK(uc_reg_write(uc, UC_ARM_REG_FPEXC, &fpexc));
+    for (size_t i = 0; i < sizeof(shifts) / sizeof(shifts[0]); i++) {
+        int shift = shifts[i];
+        // Only the signed low byte is the shift count.
+        uint64_t count = UINT64_C(0x123456789abc0000) | (uint8_t)shift;
+        uint64_t actual, expected_unsigned, expected_signed;
+        if (shift >= 64) {
+            expected_unsigned = expected_signed = 0;
+        } else if (shift >= 0) {
+            expected_unsigned = expected_signed = source << shift;
+        } else if (shift <= -64) {
+            expected_unsigned = 0;
+            expected_signed = UINT64_MAX;
+        } else {
+            expected_unsigned = source >> -shift;
+            expected_signed = ~((~source) >> -shift);
+        }
+        OK(uc_reg_write(uc, UC_ARM_REG_D0, &source));
+        OK(uc_reg_write(uc, UC_ARM_REG_D1, &count));
+        OK(uc_reg_write(uc, UC_ARM_REG_D2, &source));
+        OK(uc_reg_write(uc, UC_ARM_REG_D3, &count));
+        OK(uc_reg_write(uc, UC_ARM_REG_D4, &source));
+        OK(uc_reg_write(uc, UC_ARM_REG_D5, &source));
+        OK(uc_reg_write(uc, UC_ARM_REG_D6, &count));
+        OK(uc_reg_write(uc, UC_ARM_REG_D7, &count));
+        OK(uc_emu_start(uc, code_start, code_start + sizeof(code) - 1, 0, 0));
+        OK(uc_reg_read(uc, UC_ARM_REG_D0, &actual));
+        TEST_CHECK(actual == expected_unsigned);
+        OK(uc_reg_read(uc, UC_ARM_REG_D2, &actual));
+        TEST_CHECK(actual == expected_signed);
+        OK(uc_reg_read(uc, UC_ARM_REG_D4, &actual));
+        TEST_CHECK(actual == expected_unsigned);
+        OK(uc_reg_read(uc, UC_ARM_REG_D5, &actual));
+        TEST_CHECK(actual == expected_unsigned);
+    }
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
+             {"test_arm_neon_single_lane_64_shift", test_arm_neon_single_lane_64_shift},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},
              {"test_armeb_be8_sub", test_armeb_be8_sub},
