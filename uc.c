@@ -3374,8 +3374,8 @@ uc_err uc_embedder_set_parallel_cpus(uc_engine *uc, bool enabled)
     return UC_ERR_OK;
 }
 
-// embedder: test exit requests inline at block entry and after memory accesses
-// (uc_priv.h embedder_block_exits). Translated blocks change, so they are flushed.
+// embedder: select block-entry-only exit checks. Translated blocks change, so
+// they are flushed.
 UNICORN_EXPORT
 uc_err uc_embedder_set_block_exits(uc_engine *uc, bool enabled)
 {

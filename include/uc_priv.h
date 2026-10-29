@@ -491,8 +491,8 @@ struct uc_struct {
     bool embedder_restart_request; // write hook: restart the storing instruction
     bool embedder_tb_thumb;        // Thumb state of the block being translated
     bool embedder_tb_slow;         // the filter asked for the block hook on every entry
-    // embedder: test exits inline at block entry and after guest memory access;
-    // call Rust only when an exit is pending.
+    // embedder: block-exit mode tests requests inline at block entry and omits
+    // per-access helpers; exact mode keeps the memory-access exit checks.
     bool embedder_block_exits;
     bool embedder_instruction_counter;
     // embedder: budgeted block accounting (uc_embedder_accounting). A block translated
