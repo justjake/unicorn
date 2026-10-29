@@ -289,9 +289,6 @@ typedef struct uc_backing_observer {
     uintptr_t base;
     size_t size;
     uint64_t *pages;
-    uint64_t *versions;
-    uint64_t *watched;
-    uint64_t *pending_rearm;
     unsigned shift;
 } uc_backing_observer;
 #define UC_BACKING_OBSERVERS 32
@@ -336,7 +333,6 @@ struct uc_struct {
     uc_softfloat_initialize softfloat_initialize;
     uc_tcg_flush_tlb tcg_flush_tlb;
     void (*tcg_flush_physical_tlb)(struct uc_struct *, uint64_t, uint64_t);
-    void (*tcg_rearm_embedder_backings)(struct uc_struct *);
     uc_invalidate_tb_t uc_invalidate_tb;
     uc_gen_tb_t uc_gen_tb;
     uc_tb_flush_t tb_flush;

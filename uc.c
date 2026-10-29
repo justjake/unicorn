@@ -3215,7 +3215,7 @@ uc_err uc_embedder_observe_backings(uc_engine *uc,
         return UC_ERR_ARG;
     for (size_t i = 0; i < count; i++) {
         const uc_backing_observer *r = &ranges[i];
-        if (!r->base || !r->size || !r->pages || !r->versions || !r->watched || !r->pending_rearm || r->shift < 12 ||
+        if (!r->base || !r->size || !r->pages || r->shift < 12 ||
             r->shift > 20 || r->base > UINTPTR_MAX - r->size)
             return UC_ERR_ARG;
         for (size_t j = 0; j < i; j++) {
@@ -3228,9 +3228,9 @@ uc_err uc_embedder_observe_backings(uc_engine *uc,
     if (count)
         memcpy(uc->embedder_observers, ranges, count * sizeof(*ranges));
     uc->embedder_observer_count = count;
-    /* Re-arm watched RAM pages after the embedder clears their page flags. */
-    if (uc->tcg_rearm_embedder_backings)
-        uc->tcg_rearm_embedder_backings(uc);
+    /* Re-arm after the embedder clears its page flags. Cached writable TLB
+     * entries must not bypass the next interval's first access. */
+    uc->tcg_flush_tlb(uc);
     restore_jit_state(uc);
     return UC_ERR_OK;
 }

@@ -15,7 +15,6 @@ void tcg_exec_init(struct uc_struct *uc, uint32_t tb_size);
 bool unicorn_fill_tlb(CPUState *cs, vaddr address, int size,
                       MMUAccessType rw, int mmu_idx,
                       bool probe, uintptr_t retaddr);
-void tcg_rearm_embedder_backings(struct uc_struct *uc);
 
 // return true on success, false on failure
 static inline bool cpu_physical_mem_read(AddressSpace *as, hwaddr addr,
@@ -205,7 +204,6 @@ static inline void uc_common_init(struct uc_struct* uc)
     uc->softfloat_initialize = softfloat_init;
     uc->tcg_flush_tlb = tcg_flush_softmmu_tlb;
     uc->tcg_flush_physical_tlb = tcg_flush_physical_tlb;
-    uc->tcg_rearm_embedder_backings = tcg_rearm_embedder_backings;
     uc->memory_map_io = memory_map_io;
     uc->set_tlb = uc_set_tlb;
     uc->memory_mapping = find_memory_mapping;

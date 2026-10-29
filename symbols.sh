@@ -5,7 +5,6 @@ SOURCE_DIR=$(dirname ${CMD_PATH})
 
 COMMON_SYMBOLS="
 tcg_flush_physical_tlb \
-tcg_rearm_embedder_backings \
 embedder_restart_insn \
 tcg_qemu_tb_exec \
 tci_tb_ptr \
