@@ -10972,7 +10972,10 @@ static void disas_arm_insn(DisasContext *s, unsigned int insn)
         gen_set_pc_im(s, s->pc_curr);
         
         gen_uc_tracecode(tcg_ctx, 4, UC_HOOK_CODE_IDX, s->uc, s->pc_curr);
-        // the callback might want to stop emulation immediately
+        // the callback might want to stop emulation immediately; an A32
+        // instruction is never inside an IT block, whatever Thumb code was
+        // translated before it left in the sticky flag
+        s->uc->no_exit_request = false;
         check_exit_request(tcg_ctx);
         // embedder: decision 3 means the hook performed the instruction
         // (including its condition); translate no body. The block ends here.
