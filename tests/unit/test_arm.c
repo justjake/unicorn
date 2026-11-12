@@ -1187,7 +1187,53 @@ static void test_arm_neon_single_lane_64_shift(void)
     OK(uc_close(uc));
 }
 
+// An alignment qualifier on a VLDn/VSTn (multiple structures) faults on an
+// unaligned address whatever SCTLR.A says (ARMv7-A). Contributed by Taylor
+// Chapman (heytchap) and Claude (Anthropic).
+static void test_arm_neon_align_qualifier_hook_interrupt(uc_engine *uc,
+                                                          int intno, void *data)
+{
+    *(int *)data = intno;
+    OK(uc_emu_stop(uc));
+}
+
+static int test_arm_neon_align_qualifier_run(const char *code, uint32_t address)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    uc_arm_cp_reg cpacr = {.cp = 15, .crn = 1, .opc2 = 2, .val = 0xf00000};
+    uint32_t fpexc = 1u << 30;
+    int intno = -1;
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_ARM, code, 4,
+                    UC_CPU_ARM_CORTEX_A15);
+    OK(uc_reg_write(uc, UC_ARM_REG_CP_REG, &cpacr));
+    OK(uc_reg_write(uc, UC_ARM_REG_FPEXC, &fpexc));
+    OK(uc_mem_map(uc, 0x10000, 0x1000, UC_PROT_ALL));
+    OK(uc_reg_write(uc, UC_ARM_REG_R3, &address));
+    OK(uc_hook_add(uc, &hook, UC_HOOK_INTR,
+                   test_arm_neon_align_qualifier_hook_interrupt, &intno, 1, 0));
+    OK(uc_emu_start(uc, code_start, code_start + 4, 0, 1));
+    OK(uc_hook_del(uc, hook));
+    OK(uc_close(uc));
+    return intno;
+}
+
+static void test_arm_neon_align_qualifier(void)
+{
+    // vst1.8 {d16-d17}, [r3 :64]
+    const char qualified[] = "\x1f\x0a\x43\xf4";
+    // vst1.8 {d16-d17}, [r3]
+    const char plain[] = "\x0f\x0a\x43\xf4";
+
+    TEST_CHECK(test_arm_neon_align_qualifier_run(qualified, 0x10008) == -1);
+    // EXCP_DATA_ABORT
+    TEST_CHECK(test_arm_neon_align_qualifier_run(qualified, 0x10004) == 4);
+    TEST_CHECK(test_arm_neon_align_qualifier_run(plain, 0x10004) == -1);
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
+             {"test_arm_neon_align_qualifier", test_arm_neon_align_qualifier},
              {"test_arm_neon_single_lane_64_shift", test_arm_neon_single_lane_64_shift},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},
