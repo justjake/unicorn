@@ -1187,11 +1187,20 @@ static void uc_invalidate_tb_cause(struct uc_struct *uc, uint64_t start_addr,
                                    enum uc_embedder_exit_counter cause)
 {
     tb_page_addr_t start, end;
+    CPUState *cpu = uc->cpu;
+    int saved_exception = cpu ? cpu->exception_index : -1;
 
     uc->nested_level++;
     if (sigsetjmp(uc->jmp_bufs[uc->nested_level - 1], 0) != 0) {
-        // We a get cpu fault in get_page_addr_code, ignore it.
+        // We a get cpu fault in get_page_addr_code, ignore it. The probe asks
+        // the MMU for an instruction page, so a refused probe reaches
+        // cpu_loop_exit after arming the processor's pending exception. Clear
+        // it again: the probe was not part of the guest's execution, and the
+        // interrupted run must not take that exception at its own PC.
         uc->nested_level--;
+        if (cpu) {
+            cpu->exception_index = saved_exception;
+        }
         return;
     }
 
