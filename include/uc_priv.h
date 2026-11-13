@@ -488,7 +488,9 @@ struct uc_struct {
     size_t embedder_observer_count;
     uc_backing_observer embedder_observers[UC_BACKING_OBSERVERS];
     // embedder: one bit per 1 KiB physical page whose stores reach embedder_watched
-    // write hooks from the TLB fast path's slow path
+    // write hooks from the TLB fast path's slow path. Allocated by the first
+    // uc_embedder_watch, which declares that the embedder watches every page it
+    // sees translated (page-hooks mode then limits code-write detection to them).
     uint8_t *embedder_watch;
     // embedder: translation filter (ARM state). Returns 0 for no code hook, 1 for
     // the hook, 2 for the hook and the end of the translated block after the

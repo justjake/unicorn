@@ -11489,6 +11489,8 @@ static void arm_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     if (arm_pre_translate_insn(dc)) {
         return;
     }
+    // A Thumb block that ended inside an IT block leaves no_exit_request set; ARM code has no IT blocks, so exit checks stay enabled.
+    dc->uc->no_exit_request = false;
 
     // Unicorn: end address tells us to stop emulation
     if (uc_addr_is_exit(dc->uc, dcbase->pc_next)) {

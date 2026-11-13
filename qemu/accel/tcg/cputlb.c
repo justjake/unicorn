@@ -972,10 +972,13 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
             if (section->readonly) {
                 write_address |= TLB_DISCARD_WRITE;
             } else if (cpu_physical_memory_is_clean(iotlb)) {
-                /* embedder: only watched pages can hold translated code (the
-                   embedder watches every page it sees translated, in every
-                   engine and alias); others keep the store fast path. */
+                /* embedder: an embedder that declares code watches watches
+                   every page it sees translated, in every engine and alias, so
+                   only watched pages can hold translated code; others keep the
+                   store fast path. An engine without declared watches keeps
+                   QEMU's code-write detection on every page holding code. */
                 if (!cpu->uc->embedder_page_hooks || cpu->uc->snapshot_level != 0 ||
+                    cpu->uc->embedder_watch == NULL ||
                     embedder_watched(cpu->uc, paddr_page, paddr_page + TARGET_PAGE_SIZE - 1)) {
                     write_address |= TLB_NOTDIRTY;
                 }
