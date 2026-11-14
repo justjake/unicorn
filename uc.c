@@ -28,6 +28,11 @@
 #include "qemu/target/tricore/unicorn.h"
 
 #include "qemu/include/tcg/tcg-apple-jit.h"
+#if !defined(CONFIG_TCG_INTERPRETER) && defined(__APPLE__) &&                 \
+    defined(HAVE_PTHREAD_JIT_PROTECT) && (defined(__arm__) || defined(__aarch64__))
+/* Changes of this thread's JIT write protection; see tcg-apple-jit.h. */
+_Thread_local unsigned int uc_jit_toggle_count;
+#endif
 #include "qemu/include/qemu/queue.h"
 #include "qemu-common.h"
 
