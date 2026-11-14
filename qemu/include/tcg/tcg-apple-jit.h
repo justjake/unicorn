@@ -106,27 +106,39 @@ static inline void assert_executable(bool executable) {
 
 #if !defined(CONFIG_TCG_INTERPRETER) && defined(__APPLE__) && defined(HAVE_PTHREAD_JIT_PROTECT) && (defined(__arm__) || defined(__aarch64__))
 
+/* Every change of this thread's JIT write protection goes through
+ * jit_write_protect(), which counts it. A callback guard restores the
+ * protection only when the callback actually changed it: an unconditional
+ * restore costs an ISB-serialised system register write per hook call
+ * (per instruction under a code hook). Defined in uc.c. */
+extern _Thread_local unsigned int uc_jit_toggle_count;
+
 /* write protect enable = write disable */
 static inline void jit_write_protect(int enabled)
 {
+    uc_jit_toggle_count++;
     return pthread_jit_write_protect_np(enabled);
 }
 
 #define JIT_CALLBACK_GUARD(x)                       \
 {                                                   \
     bool executable = uc->current_executable;       \
-    assert_executable(executable);                  \
+    unsigned int toggles = uc_jit_toggle_count;     \
     x;                                              \
-    jit_write_protect(executable);                  \
+    if (uc_jit_toggle_count != toggles) {           \
+        jit_write_protect(executable);              \
+    }                                               \
 }                                                   \
 
 
 #define JIT_CALLBACK_GUARD_VAR(var, x)                  \
 {                                                       \
     bool executable = uc->current_executable;           \
-    assert_executable(executable);                      \
+    unsigned int toggles = uc_jit_toggle_count;         \
     var = x;                                            \
-    jit_write_protect(executable);                      \
+    if (uc_jit_toggle_count != toggles) {               \
+        jit_write_protect(executable);                  \
+    }                                                   \
 }                                                       \
 
 
