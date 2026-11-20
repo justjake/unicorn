@@ -301,6 +301,36 @@ typedef struct uc_backing_observer {
 } uc_backing_observer;
 #define UC_BACKING_OBSERVERS 32
 
+// embedder: block chains. The record the embedder shares with translated
+// code (uc_embedder_block_chain). The embedder reads and writes it from hooks
+// and while no emulation runs.
+// - budget: what admitted blocks may still spend. Translated code subtracts
+//   an admitted block's weight on each hookless entry and never raises it;
+//   the embedder sets it and takes it back.
+// - last: the tag of the block most recently entered without its hooks.
+// - guards: one word per page slot. A block's slot is bits 12..17 of its
+//   guest address. Hookless entry needs guards[slot] == the block's key.
+#define UC_EMBEDDER_CHAIN_GUARDS 64
+typedef struct uc_embedder_chain {
+    int64_t budget;
+    uint64_t last;
+    uint32_t guards[UC_EMBEDDER_CHAIN_GUARDS];
+} uc_embedder_chain;
+// One translated block's admission. key == UC_EMBEDDER_CHAIN_NONE: not admitted.
+#define UC_EMBEDDER_CHAIN_NONE UINT32_MAX
+typedef struct uc_embedder_chain_cell {
+    uint32_t key;
+    uint32_t weight;
+    uint64_t tag;
+} uc_embedder_chain_cell;
+#define UC_EMBEDDER_CHAIN_CHUNK 1024
+struct uc_embedder_chain_chunk {
+    struct uc_embedder_chain_chunk *next;
+    uc_embedder_chain_cell cells[UC_EMBEDDER_CHAIN_CHUNK];
+};
+uc_embedder_chain_cell *uc_embedder_chain_cell_new(struct uc_struct *uc);
+void uc_embedder_chain_flush(struct uc_struct *uc);
+
 struct uc_struct {
     /* Owner obligations are not architectural CPU context and cannot be
      * copied away by a register snapshot. Zero means unattached. */
@@ -537,6 +567,24 @@ struct uc_struct {
     bool tci_return_pending; // TCI helper asks for an unchained return
     /* Bumped whenever a translation dies, so cached targets can be dropped. */
     uint64_t embedder_tb_epoch;
+    // embedder: block chains (uc_embedder_set_block_chains). While enabled,
+    // every translated block that calls block hooks owns a cell. A block hook
+    // may admit the block it was called for (uc_embedder_admit_block). An
+    // admitted block is entered without its hooks and without the exit
+    // request helper while no exit is requested, the guard word of its page
+    // slot equals the cell's key and the budget covers the cell's weight:
+    // translated code subtracts the weight and records the cell's tag in
+    // `last`. Any other entry calls the hooks as before. See
+    // uc_embedder_chain.
+    bool embedder_chains;
+    uc_embedder_chain embedder_chain;
+    // The cell of the block whose hooks are running. Meaningful only inside
+    // a block hook; the block hook helper clears it when the hooks return.
+    uc_embedder_chain_cell *embedder_chain_cell;
+    // Cells live in chunks that never move; a translation flush reuses them.
+    struct uc_embedder_chain_chunk *embedder_chain_chunks;
+    struct uc_embedder_chain_chunk *embedder_chain_chunk;
+    uint32_t embedder_chain_used;
 };
 
 // Metadata stub for the variable-size cpu context used with uc_context_*()

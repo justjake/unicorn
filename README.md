@@ -41,6 +41,17 @@ overhead and running the translation engine without a host JIT:
   (`uc_embedder_features()` bit 256). Exact accounting keeps its ring write
   in the block helper; a fast block enters that helper only once its budget
   runs out or a pause arrives.
+- Block chains (`uc_embedder_set_block_chains`, `uc_embedder_block_chain`,
+  `uc_embedder_admit_block`; `uc_embedder_features()` bit 1024): one admitted
+  run can cover several translated blocks without a block hook call for each.
+  A block hook admits the block it was called for with a weight, a key and a
+  tag. That translation is then entered without its hooks and without the
+  exit request helper while no exit is requested, the guard word of its page
+  slot equals its key and the budget covers its weight; translated code
+  subtracts the weight and records the tag. Every other entry calls the
+  hooks as before. The embedder owns the budget and the 64 guard words, and
+  an admission ends with its translation. Disabled by default; enabled with
+  nothing admitted, every block still calls its hooks.
 - `FUJIMOD_PERF_MAP` writes a perf-map line for every installed translation,
   for host profilers and Samply. Set it to a path or `1` for
   `/tmp/perf-PID.map`; entries flush periodically and at process exit.

@@ -125,6 +125,95 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
     gen_set_label(tcg_ctx, body);
 }
 
+/*
+ * embedder: block chains (uc_priv.h, uc_embedder_chain). The block's cell
+ * holds what a block hook admitted. While the guard word of the block's page
+ * slot equals the cell's key and the budget covers the cell's weight, the
+ * block spends the weight, leaves its tag in `last` and goes to `body`,
+ * past its hooks and the exit request helper. Otherwise it records its cell
+ * for uc_embedder_admit_block and falls through to the hooks.
+ *
+ * A requested exit (uc_emu_stop, also from another thread) fails the test,
+ * so the hooks' path and its exit test serve it; the engine never writes
+ * the budget itself. No hook ran since the embedder last set the budget, so
+ * nothing can have requested a retry or a restart of this block.
+ */
+static TCGLabel *gen_embedder_chain_guard(TCGContext *tcg_ctx,
+                                          struct uc_struct *uc,
+                                          target_ulong pc)
+{
+    uc_embedder_chain_cell *cell = uc_embedder_chain_cell_new(uc);
+    uint32_t *guard =
+        &uc->embedder_chain.guards[(pc >> 12) & (UC_EMBEDDER_CHAIN_GUARDS - 1)];
+    TCGLabel *hooks, *body;
+    TCGv_ptr base;
+    TCGv_i32 key, word;
+    TCGv_i64 weight, budget, tag;
+
+    if (!cell) {
+        return NULL;
+    }
+    hooks = gen_new_label(tcg_ctx);
+    body = gen_new_label(tcg_ctx);
+
+    word = tcg_temp_new_i32(tcg_ctx);
+    tcg_gen_ld_i32(tcg_ctx, word, tcg_ctx->cpu_env,
+                   offsetof(ArchCPU, neg.icount_decr.u32) -
+                   offsetof(ArchCPU, env));
+    tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_LT, word, 0, hooks);
+    tcg_temp_free_i32(tcg_ctx, word);
+
+    key = tcg_temp_new_i32(tcg_ctx);
+    word = tcg_temp_new_i32(tcg_ctx);
+    base = tcg_const_ptr(tcg_ctx, cell);
+    tcg_gen_ld_i32(tcg_ctx, key, base, offsetof(uc_embedder_chain_cell, key));
+    tcg_temp_free_ptr(tcg_ctx, base);
+    base = tcg_const_ptr(tcg_ctx, guard);
+    tcg_gen_ld_i32(tcg_ctx, word, base, 0);
+    tcg_temp_free_ptr(tcg_ctx, base);
+    tcg_gen_brcond_i32(tcg_ctx, TCG_COND_NE, key, word, hooks);
+    tcg_temp_free_i32(tcg_ctx, key);
+    tcg_temp_free_i32(tcg_ctx, word);
+
+    weight = tcg_temp_new_i64(tcg_ctx);
+    budget = tcg_temp_local_new_i64(tcg_ctx);
+    base = tcg_const_ptr(tcg_ctx, cell);
+    tcg_gen_ld32u_i64(tcg_ctx, weight, base,
+                      offsetof(uc_embedder_chain_cell, weight));
+    tcg_temp_free_ptr(tcg_ctx, base);
+    base = tcg_const_ptr(tcg_ctx, &uc->embedder_chain);
+    tcg_gen_ld_i64(tcg_ctx, budget, base, offsetof(uc_embedder_chain, budget));
+    tcg_temp_free_ptr(tcg_ctx, base);
+    tcg_gen_sub_i64(tcg_ctx, budget, budget, weight);
+    tcg_temp_free_i64(tcg_ctx, weight);
+    tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_LT, budget, 0, hooks);
+
+    base = tcg_const_ptr(tcg_ctx, &uc->embedder_chain);
+    tcg_gen_st_i64(tcg_ctx, budget, base, offsetof(uc_embedder_chain, budget));
+    tcg_temp_free_ptr(tcg_ctx, base);
+    tcg_temp_free_i64(tcg_ctx, budget);
+    tag = tcg_temp_new_i64(tcg_ctx);
+    base = tcg_const_ptr(tcg_ctx, cell);
+    tcg_gen_ld_i64(tcg_ctx, tag, base, offsetof(uc_embedder_chain_cell, tag));
+    tcg_temp_free_ptr(tcg_ctx, base);
+    base = tcg_const_ptr(tcg_ctx, &uc->embedder_chain);
+    tcg_gen_st_i64(tcg_ctx, tag, base, offsetof(uc_embedder_chain, last));
+    tcg_temp_free_ptr(tcg_ctx, base);
+    tcg_temp_free_i64(tcg_ctx, tag);
+    tcg_gen_br(tcg_ctx, body);
+
+    gen_set_label(tcg_ctx, hooks);
+    base = tcg_const_ptr(tcg_ctx, cell);
+    {
+        TCGv_ptr owner = tcg_const_ptr(tcg_ctx, uc);
+        tcg_gen_st_ptr(tcg_ctx, base, owner,
+                       offsetof(struct uc_struct, embedder_chain_cell));
+        tcg_temp_free_ptr(tcg_ctx, owner);
+    }
+    tcg_temp_free_ptr(tcg_ctx, base);
+    return body;
+}
+
 void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
                      CPUState *cpu, TranslationBlock *tb, int max_insns)
 {
@@ -134,6 +223,7 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
     TCGOp *prev_op = NULL;
     bool block_hook = false;
     struct EmbedderBlockGuard embedder_guard = { 0 };
+    TCGLabel *chain_body = NULL;
 
     /* Initialize DisasContext */
     db->tb = tb;
@@ -169,6 +259,12 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
      */
     if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_BLOCK, tb->pc)) {
         ops->pc_sync(db, cpu);
+        // embedder: an admitted block may pass its hooks (block chains). The
+        // helper form of the exit test is passed with them; the inline forms
+        // stay on both paths. A delay-slot flag cannot live across a label.
+        if (uc->embedder_chains && !tcg_ctx->delay_slot_flag) {
+            chain_body = gen_embedder_chain_guard(tcg_ctx, uc, db->pc_first);
+        }
         prev_op = tcg_last_op(tcg_ctx);
         block_hook = true;
         if (uc->embedder_insn_filter) {
@@ -184,7 +280,15 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
     uc->embedder_tb_slow = false;
 
     /* Start translating.  */
+    if (chain_body && (uc->embedder_block_exits ||
+                       uc->embedder_instruction_counter)) {
+        gen_set_label(tcg_ctx, chain_body);
+        chain_body = NULL;
+    }
     gen_tb_start(tcg_ctx, db->tb);
+    if (chain_body) {
+        gen_set_label(tcg_ctx, chain_body);
+    }
     // tcg_dump_ops(tcg_ctx, false, "tb start");
 
     ops->tb_start(db, cpu);
