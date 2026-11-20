@@ -1187,7 +1187,47 @@ static void test_arm_neon_single_lane_64_shift(void)
     OK(uc_close(uc));
 }
 
+static void test_it_hook_cb(uc_engine *uc, uc_mem_type type, uint64_t address,
+                            int size, int64_t value, void *user_data)
+{
+    (*(int *)user_data)++;
+}
+
+// A memory hook that returns into its block must not leave the ITSTATE of
+// the hooked instruction in the CPU state: the block goes on past the IT
+// block, and the next block would begin as if inside it.
+static void test_thumb_it_memory_hook(void)
+{
+    // movs r3,#0; cmp r0,r0; it eq; str/ldr eq r1,[r2]; movs r4,#1; b .+2;
+    // adds r3,#5
+    char store[] = "\x00\x23\x80\x42\x08\xbf\x11\x60\x01\x24\xff\xe7\x05\x33";
+    char load[] = "\x00\x23\x80\x42\x08\xbf\x11\x68\x01\x24\xff\xe7\x05\x33";
+    int variant;
+
+    for (variant = 0; variant < 4; variant++) {
+        uc_engine *uc;
+        uc_hook hook;
+        int calls = 0, r2 = 0x3000, r3 = -1;
+        char *code = variant & 1 ? load : store;
+
+        uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB, code, sizeof(store) - 1,
+                        UC_CPU_ARM_CORTEX_A15);
+        OK(uc_reg_write(uc, UC_ARM_REG_R2, &r2));
+        if (variant & 2) {
+            OK(uc_hook_add(uc, &hook,
+                           variant & 1 ? UC_HOOK_MEM_READ : UC_HOOK_MEM_WRITE,
+                           test_it_hook_cb, &calls, 0x3000, 0x3fff));
+        }
+        OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(store) - 1, 0, 0));
+        OK(uc_reg_read(uc, UC_ARM_REG_R3, &r3));
+        TEST_CHECK(calls == (variant & 2 ? 1 : 0));
+        TEST_CHECK(r3 == 5);
+        OK(uc_close(uc));
+    }
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
+             {"test_thumb_it_memory_hook", test_thumb_it_memory_hook},
              {"test_arm_neon_single_lane_64_shift", test_arm_neon_single_lane_64_shift},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},

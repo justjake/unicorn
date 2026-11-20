@@ -56,6 +56,9 @@ overhead and running the translation engine without a host JIT:
   bit 512). Each engine records the inner-shareable invalidations its guest
   executed; the embedder delivers them to peer processors and acknowledges
   each record before the engine runs again.
+- Memory read and write hooks that return into their translated block leave
+  ITSTATE as translated code expects it (`uc_embedder_features()` bit 2048).
+  The hook still sees the ITSTATE of the accessing instruction.
 - Stoppable Thumb instruction-entry hooks with synchronized ITSTATE, including
   instructions whose condition fails (`uc_embedder_features()` bit 4).
 - An optional Tiny Code Interpreter (TCI) backend, including Emscripten support.

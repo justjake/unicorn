@@ -3374,10 +3374,12 @@ uc_err uc_embedder_request_restart(uc_engine *uc)
 // 128: translated blocks count guest instructions in CPUState.
 // 256: fast ARM blocks debit the coarse interactive budget in translated code.
 // 512: ABI-1 Cortex-A7 accepted-TLBI owner queue.
+// 2048: memory read and write hooks that return into their block leave
+//       ITSTATE as translated code expects it (cputlb.c, EMBEDDER_HOOKS_RETURN).
 UNICORN_EXPORT
 uint32_t uc_embedder_features(void)
 {
-    return 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512;
+    return 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 2048;
 }
 
 UNICORN_EXPORT
