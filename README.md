@@ -41,6 +41,10 @@ overhead and running the translation engine without a host JIT:
   (`uc_embedder_features()` bit 256). Exact accounting keeps its ring write
   in the block helper; a fast block enters that helper only once its budget
   runs out or a pause arrives.
+- `uc_embedder_store_watched` (`uc_embedder_features()` bit 4096) tells
+  whether a store is certain to reach watched write hooks: every target page
+  it touches holds a watched 1 KiB page. Other stores reach those hooks only
+  when they take the slow path for the engine's own reasons.
 - Block chains (`uc_embedder_set_block_chains`, `uc_embedder_block_chain`,
   `uc_embedder_admit_block`; `uc_embedder_features()` bit 1024): one admitted
   run can cover several translated blocks without a block hook call for each.

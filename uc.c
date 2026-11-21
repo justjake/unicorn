@@ -3340,6 +3340,39 @@ uc_err uc_embedder_unwatch(uc_engine *uc, uint64_t address, uint64_t size)
     return UC_ERR_OK;
 }
 
+// embedder: whether a store into [address, address + size) is certain to
+// reach watched write hooks in page hooks mode: every target page the range
+// touches holds a watched 1 KiB page, so its stores always take the slow
+// path. A store into another page reaches those hooks only when it takes
+// the slow path for a reason of the engine's own, such as a TLB miss, and
+// the same store done again may not.
+UNICORN_EXPORT
+bool uc_embedder_store_watched(uc_engine *uc, uint64_t address, uint64_t size)
+{
+    uint64_t last = address + size - 1;
+    uint64_t target, page;
+
+    if (uc->embedder_watch == NULL || size == 0 || last < address ||
+        last > 0xffffffffULL) {
+        return false;
+    }
+    for (target = address & ~(uint64_t)uc->target_page_align; target <= last;
+         target += uc->target_page_size) {
+        bool watched = false;
+        for (page = target >> 10;
+             page <= (target + uc->target_page_align) >> 10; page++) {
+            if (uc->embedder_watch[page >> 3] & (1 << (page & 7))) {
+                watched = true;
+                break;
+            }
+        }
+        if (!watched) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // embedder: install (or with filter NULL remove) the ARM translation filter and
 // the restart callback (see uc_priv.h). Translations made under the previous
 // setting are flushed.
@@ -3394,10 +3427,12 @@ uc_err uc_embedder_request_restart(uc_engine *uc)
 // 1024: block chains (uc_embedder_set_block_chains, _block_chain, _admit_block).
 // 2048: memory read and write hooks that return into their block leave
 //       ITSTATE as translated code expects it (cputlb.c, EMBEDDER_HOOKS_RETURN).
+// 4096: uc_embedder_store_watched.
 UNICORN_EXPORT
 uint32_t uc_embedder_features(void)
 {
-    return 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048;
+    return 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 |
+           4096;
 }
 
 UNICORN_EXPORT

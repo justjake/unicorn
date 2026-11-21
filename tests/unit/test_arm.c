@@ -1226,6 +1226,33 @@ static void test_thumb_it_memory_hook(void)
     }
 }
 
+// A store is certain to reach watched write hooks when every target page it
+// touches holds a watched 1 KiB page.
+uc_err uc_embedder_watch(uc_engine *uc, uint64_t address, uint64_t size);
+bool uc_embedder_store_watched(uc_engine *uc, uint64_t address, uint64_t size);
+static void test_arm_embedder_store_watched(void)
+{
+    uc_engine *uc;
+    char code[] = "\x00\xf0\x20\xe3"; // nop
+    uint64_t page = 0x40000;
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_ARM, code, sizeof(code) - 1,
+                    UC_CPU_ARM_CORTEX_A15);
+    TEST_CHECK(!uc_embedder_store_watched(uc, page, 4));
+    OK(uc_embedder_watch(uc, page + 0x400, 4));
+    // The watched 1 KiB page.
+    TEST_CHECK(uc_embedder_store_watched(uc, page + 0x400, 4));
+    TEST_CHECK(uc_embedder_store_watched(uc, page + 0x7fc, 4));
+    // A target page without a watch, a range that leaves the watched target
+    // page, an empty range and a range past 4 GiB.
+    TEST_CHECK(!uc_embedder_store_watched(uc, page + 0x1000, 4));
+    TEST_CHECK(!uc_embedder_store_watched(uc, page - 4, 4));
+    TEST_CHECK(!uc_embedder_store_watched(uc, page + 0x400, 0x2000));
+    TEST_CHECK(!uc_embedder_store_watched(uc, page + 0x400, 0));
+    TEST_CHECK(!uc_embedder_store_watched(uc, 0xfffffffcULL, 8));
+    OK(uc_close(uc));
+}
+
 // Block chains (uc_priv.h, uc_embedder_chain). An admitted block passes its
 // hook while its page guard holds its key and the budget covers its weight.
 uc_err uc_embedder_set_block_chains(uc_engine *uc, bool enabled);
@@ -1373,6 +1400,7 @@ static void test_arm_embedder_block_chains(void)
 }
 
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
+             {"test_arm_embedder_store_watched", test_arm_embedder_store_watched},
              {"test_arm_embedder_block_chains", test_arm_embedder_block_chains},
              {"test_thumb_it_memory_hook", test_thumb_it_memory_hook},
              {"test_arm_neon_single_lane_64_shift", test_arm_neon_single_lane_64_shift},
