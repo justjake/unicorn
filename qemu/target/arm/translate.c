@@ -3358,6 +3358,7 @@ static int disas_neon_ls_insn(DisasContext *s, uint32_t insn)
     int vec_size;
     int mmu_idx;
     MemOp endian;
+    MemOp align_mop;
     TCGv_i32 addr;
     TCGv_i32 tmp;
     TCGv_i32 tmp2;
@@ -3418,6 +3419,11 @@ static int disas_neon_ls_insn(DisasContext *s, uint32_t insn)
         if (interleave == 1 && endian == MO_LE) {
             size = 3;
         }
+        /* The align field (bits 5:4) asks for 64/128/256-bit alignment of the address; an
+         * unaligned address takes an Alignment fault whatever SCTLR.A says (ARMv7 VLDn/VSTn
+         * multiple structures). The first access carries the check. Contributed by Taylor
+         * Chapman (heytchap) and Claude (Anthropic). */
+        align_mop = ((insn >> 4) & 3) ? (MemOp)((((insn >> 4) & 3) + 2) << MO_ASHIFT) : 0;
         tmp64 = tcg_temp_new_i64(tcg_ctx);
         addr = tcg_temp_new_i32(tcg_ctx);
         tmp2 = tcg_const_i32(tcg_ctx, 1 << size);
@@ -3428,12 +3434,13 @@ static int disas_neon_ls_insn(DisasContext *s, uint32_t insn)
                 for (xs = 0; xs < interleave; xs++) {
                     int tt = rd + reg + spacing * xs;
 
+                    MemOp first_mop = (reg == 0 && n == 0 && xs == 0) ? align_mop : 0;
                     if (load) {
-                        gen_aa32_ld_i64(s, tmp64, addr, mmu_idx, endian | size);
+                        gen_aa32_ld_i64(s, tmp64, addr, mmu_idx, endian | size | first_mop);
                         neon_store_element64(tcg_ctx, tt, n, size, tmp64);
                     } else {
                         neon_load_element64(tcg_ctx, tmp64, tt, n, size);
-                        gen_aa32_st_i64(s, tmp64, addr, mmu_idx, endian | size);
+                        gen_aa32_st_i64(s, tmp64, addr, mmu_idx, endian | size | first_mop);
                     }
                     tcg_gen_add_i32(tcg_ctx, addr, addr, tmp2);
                 }
