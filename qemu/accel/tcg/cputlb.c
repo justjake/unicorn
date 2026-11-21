@@ -1239,6 +1239,35 @@ static bool victim_tlb_hit(CPUArchState *env, size_t mmu_idx, size_t index,
   victim_tlb_hit(env, mmu_idx, index, offsetof(CPUTLBEntry, TY), \
                  (ADDR) & TARGET_PAGE_MASK)
 
+/*
+ * embedder: a memory hook is given the guest state of the accessing
+ * instruction (cpu_restore_state). For Thumb code that includes ITSTATE,
+ * which translated code does not keep in the CPU state while a block runs:
+ * it writes it only where a block ends inside an IT block. A hook that
+ * returns into its block must not leave the instruction's ITSTATE behind,
+ * or a block that goes on past the IT block ends with it still set and the
+ * next block is looked up as if it began inside the IT block: its first
+ * instructions become conditional.
+ *
+ * EMBEDDER_HOOK_STATE() is the value translated code left. After a group of
+ * hooks that return into the block, EMBEDDER_HOOKS_RETURN() puts it back and
+ * has a later group restore the state again. A hook that asked for a stop
+ * keeps what it left.
+ */
+#ifdef TARGET_ARM
+#define EMBEDDER_HOOK_STATE(env) ((env)->condexec_bits)
+#define EMBEDDER_HOOKS_RETURN(uc, env, state, synced)                         \
+    do {                                                                      \
+        if ((synced) && !(uc)->stop_request) {                                \
+            (env)->condexec_bits = (state);                                   \
+            (synced) = false;                                                 \
+        }                                                                     \
+    } while (0)
+#else
+#define EMBEDDER_HOOK_STATE(env) 0
+#define EMBEDDER_HOOKS_RETURN(uc, env, state, synced) ((void)(state))
+#endif
+
 /* embedder: memory hooks may flush the TLB (uc_embedder_watch from the embedder's
    hooks, uc_hook_add, mapping changes), and a flush may resize it, which
    frees the table `entry` points into. After hooks run, look the entry up
@@ -1681,6 +1710,7 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
     struct uc_struct *uc = env->uc;
     MemoryRegion *mr;
     bool synced = false;
+    uint32_t embedder_hook_state = EMBEDDER_HOOK_STATE(env);
 
     /* Handle CPU specific unaligned behaviour */
     if (addr & ((1 << a_bits) - 1)) {
@@ -1811,6 +1841,7 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
             if (uc->stop_request)
                 break;
         }
+        EMBEDDER_HOOKS_RETURN(uc, env, embedder_hook_state, synced);
 
         /* Unicorn: Previous callbacks may invalidate TLB, reload everything.
            embedder: a flush may also resize the TLB and free `entry`; look it up
@@ -1993,6 +2024,7 @@ _out:
                 if (uc->stop_request)
                     break;
             }
+            EMBEDDER_HOOKS_RETURN(uc, env, embedder_hook_state, synced);
         }
     }
 
@@ -2302,6 +2334,7 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
     bool handled;
     MemoryRegion *mr;
     bool synced = false;
+    uint32_t embedder_hook_state = EMBEDDER_HOOK_STATE(env);
 
     /* Handle CPU specific unaligned behaviour */
     if (addr & ((1 << a_bits) - 1)) {
@@ -2347,6 +2380,7 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
             if (uc->stop_request)
                 break;
         }
+        EMBEDDER_HOOKS_RETURN(uc, env, embedder_hook_state, synced);
         // embedder: a hook found this store overwrote translated code; the store
         // is redone in a block of its own so execution can stop right after
         if (uc->embedder_restart_request) {

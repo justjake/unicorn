@@ -41,6 +41,21 @@ overhead and running the translation engine without a host JIT:
   (`uc_embedder_features()` bit 256). Exact accounting keeps its ring write
   in the block helper; a fast block enters that helper only once its budget
   runs out or a pause arrives.
+- `uc_embedder_store_watched` (`uc_embedder_features()` bit 4096) tells
+  whether a store is certain to reach watched write hooks: every target page
+  it touches holds a watched 1 KiB page. Other stores reach those hooks only
+  when they take the slow path for the engine's own reasons.
+- Block chains (`uc_embedder_set_block_chains`, `uc_embedder_block_chain`,
+  `uc_embedder_admit_block`; `uc_embedder_features()` bit 1024): one admitted
+  run can cover several translated blocks without a block hook call for each.
+  A block hook admits the block it was called for with a weight, a key and a
+  tag. That translation is then entered without its hooks and without the
+  exit request helper while no exit is requested, the guard word of its page
+  slot equals its key and the budget covers its weight; translated code
+  subtracts the weight and records the tag. Every other entry calls the
+  hooks as before. The embedder owns the budget and the 64 guard words, and
+  an admission ends with its translation. Disabled by default; enabled with
+  nothing admitted, every block still calls its hooks.
 - `FUJIMOD_PERF_MAP` writes a perf-map line for every installed translation,
   for host profilers and Samply. Set it to a path or `1` for
   `/tmp/perf-PID.map`; entries flush periodically and at process exit.
@@ -56,6 +71,9 @@ overhead and running the translation engine without a host JIT:
   bit 512). Each engine records the inner-shareable invalidations its guest
   executed; the embedder delivers them to peer processors and acknowledges
   each record before the engine runs again.
+- Memory read and write hooks that return into their translated block leave
+  ITSTATE as translated code expects it (`uc_embedder_features()` bit 2048).
+  The hook still sees the ITSTATE of the accessing instruction.
 - Stoppable Thumb instruction-entry hooks with synchronized ITSTATE, including
   instructions whose condition fails (`uc_embedder_features()` bit 4).
 - An optional Tiny Code Interpreter (TCI) backend, including Emscripten support.

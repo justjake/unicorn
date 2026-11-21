@@ -1467,6 +1467,7 @@ static void do_tb_flush(CPUState *cpu, run_on_cpu_data tb_flush_count)
     page_flush_tb(cpu->uc);
 
     tcg_region_reset_all(cpu->uc->tcg_ctx);
+    uc_embedder_chain_flush(cpu->uc);
     cpu->uc->embedder_exit_counters[UC_COUNT_TRANSLATION_FLUSHES]++;
     /* XXX: flush processor icache at this point if cache flush is
        expensive */

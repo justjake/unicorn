@@ -1187,7 +1187,222 @@ static void test_arm_neon_single_lane_64_shift(void)
     OK(uc_close(uc));
 }
 
+static void test_it_hook_cb(uc_engine *uc, uc_mem_type type, uint64_t address,
+                            int size, int64_t value, void *user_data)
+{
+    (*(int *)user_data)++;
+}
+
+// A memory hook that returns into its block must not leave the ITSTATE of
+// the hooked instruction in the CPU state: the block goes on past the IT
+// block, and the next block would begin as if inside it.
+static void test_thumb_it_memory_hook(void)
+{
+    // movs r3,#0; cmp r0,r0; it eq; str/ldr eq r1,[r2]; movs r4,#1; b .+2;
+    // adds r3,#5
+    char store[] = "\x00\x23\x80\x42\x08\xbf\x11\x60\x01\x24\xff\xe7\x05\x33";
+    char load[] = "\x00\x23\x80\x42\x08\xbf\x11\x68\x01\x24\xff\xe7\x05\x33";
+    int variant;
+
+    for (variant = 0; variant < 4; variant++) {
+        uc_engine *uc;
+        uc_hook hook;
+        int calls = 0, r2 = 0x3000, r3 = -1;
+        char *code = variant & 1 ? load : store;
+
+        uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_THUMB, code, sizeof(store) - 1,
+                        UC_CPU_ARM_CORTEX_A15);
+        OK(uc_reg_write(uc, UC_ARM_REG_R2, &r2));
+        if (variant & 2) {
+            OK(uc_hook_add(uc, &hook,
+                           variant & 1 ? UC_HOOK_MEM_READ : UC_HOOK_MEM_WRITE,
+                           test_it_hook_cb, &calls, 0x3000, 0x3fff));
+        }
+        OK(uc_emu_start(uc, code_start | 1, code_start + sizeof(store) - 1, 0, 0));
+        OK(uc_reg_read(uc, UC_ARM_REG_R3, &r3));
+        TEST_CHECK(calls == (variant & 2 ? 1 : 0));
+        TEST_CHECK(r3 == 5);
+        OK(uc_close(uc));
+    }
+}
+
+// A store is certain to reach watched write hooks when every target page it
+// touches holds a watched 1 KiB page.
+uc_err uc_embedder_watch(uc_engine *uc, uint64_t address, uint64_t size);
+bool uc_embedder_store_watched(uc_engine *uc, uint64_t address, uint64_t size);
+static void test_arm_embedder_store_watched(void)
+{
+    uc_engine *uc;
+    char code[] = "\x00\xf0\x20\xe3"; // nop
+    uint64_t page = 0x40000;
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_ARM, code, sizeof(code) - 1,
+                    UC_CPU_ARM_CORTEX_A15);
+    TEST_CHECK(!uc_embedder_store_watched(uc, page, 4));
+    OK(uc_embedder_watch(uc, page + 0x400, 4));
+    // The watched 1 KiB page.
+    TEST_CHECK(uc_embedder_store_watched(uc, page + 0x400, 4));
+    TEST_CHECK(uc_embedder_store_watched(uc, page + 0x7fc, 4));
+    // A target page without a watch, a range that leaves the watched target
+    // page, an empty range and a range past 4 GiB.
+    TEST_CHECK(!uc_embedder_store_watched(uc, page + 0x1000, 4));
+    TEST_CHECK(!uc_embedder_store_watched(uc, page - 4, 4));
+    TEST_CHECK(!uc_embedder_store_watched(uc, page + 0x400, 0x2000));
+    TEST_CHECK(!uc_embedder_store_watched(uc, page + 0x400, 0));
+    TEST_CHECK(!uc_embedder_store_watched(uc, 0xfffffffcULL, 8));
+    OK(uc_close(uc));
+}
+
+// Block chains (uc_priv.h, uc_embedder_chain). An admitted block passes its
+// hook while its page guard holds its key and the budget covers its weight.
+uc_err uc_embedder_set_block_chains(uc_engine *uc, bool enabled);
+void *uc_embedder_block_chain(uc_engine *uc);
+uc_err uc_embedder_admit_block(uc_engine *uc, uint32_t weight, uint32_t key,
+                               uint64_t tag);
+struct test_chain_record {
+    int64_t budget;
+    uint64_t last;
+    uint32_t guards[64];
+};
+struct test_chain_state {
+    struct test_chain_record *record;
+    int calls[3];
+    uint32_t admit;
+    int64_t grant;
+    int stop_at;
+    bool flush_on_stop;
+    int64_t left;
+    uc_err admitted;
+};
+
+static void test_chain_block_cb(uc_engine *uc, uint64_t address, uint32_t size,
+                                void *user_data)
+{
+    struct test_chain_state *state = user_data;
+
+    if (address == code_start) {
+        if (++state->calls[0] == state->stop_at) {
+            OK(uc_emu_stop(uc));
+        }
+    } else if (address == code_start + 0x100) {
+        state->calls[1]++;
+        if (state->admit) {
+            state->admitted = uc_embedder_admit_block(uc, state->admit, 7, 0xabcd);
+        }
+        if (state->grant) {
+            state->record->budget = state->grant;
+            state->grant = 0;
+        }
+    } else if (address == code_start + 0x200) {
+        state->calls[2]++;
+    }
+}
+
+// head: add r0, r0, #1; b inner. inner: add r1, r1, #1; b tail.
+// tail: cmp r0, #40; bne head; (end)
+static void test_chain_run(struct test_chain_state *state, bool chains,
+                           uint32_t guard, int *r0, int *r1)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    char head[] = "\x01\x00\x80\xe2\x3d\x00\x00\xea";
+    char inner[] = "\x01\x10\x81\xe2\x3d\x00\x00\xea";
+    char tail[] = "\x28\x00\x50\xe3\x7d\xff\xff\x1a";
+    uint64_t pc = code_start;
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_ARM, head, sizeof(head) - 1,
+                    UC_CPU_ARM_CORTEX_A15);
+    OK(uc_mem_write(uc, code_start + 0x100, inner, sizeof(inner) - 1));
+    OK(uc_mem_write(uc, code_start + 0x200, tail, sizeof(tail) - 1));
+    OK(uc_embedder_set_block_chains(uc, chains));
+    state->record = uc_embedder_block_chain(uc);
+    state->record->guards[(code_start + 0x100) >> 12 & 63] = guard;
+    // Outside a block hook nothing can be admitted.
+    TEST_CHECK(uc_embedder_admit_block(uc, 2, 7, 0) == UC_ERR_ARG);
+    OK(uc_hook_add(uc, &hook, UC_HOOK_BLOCK, test_chain_block_cb, state, 1, 0));
+    // A stop from a hook is served before the next block; run on after it.
+    for (;;) {
+        OK(uc_emu_start(uc, pc, code_start + 0x208, 0, 0));
+        OK(uc_reg_read(uc, UC_ARM_REG_PC, &pc));
+        pc &= 0xffffffff;
+        if (pc == code_start + 0x208) {
+            break;
+        }
+        TEST_CHECK(pc == code_start);
+        state->stop_at = 0;
+        if (state->flush_on_stop) {
+            OK(uc_ctl_flush_tb(uc));
+        }
+    }
+    state->left = state->record->budget;
+    OK(uc_reg_read(uc, UC_ARM_REG_R0, r0));
+    OK(uc_reg_read(uc, UC_ARM_REG_R1, r1));
+    OK(uc_close(uc));
+}
+
+static void test_arm_embedder_block_chains(void)
+{
+    struct test_chain_state state;
+    int r0, r1;
+
+    // Without chains, and with chains but nothing admitted, an open guard
+    // without a budget, or a budget behind a closed guard: every block
+    // calls its hook.
+    memset(&state, 0, sizeof(state));
+    test_chain_run(&state, false, 7, &r0, &r1);
+    TEST_CHECK(state.calls[0] == 40 && state.calls[1] == 40 && state.calls[2] == 40);
+    TEST_CHECK(r0 == 40 && r1 == 40);
+    memset(&state, 0, sizeof(state));
+    state.grant = 1000;
+    test_chain_run(&state, true, 7, &r0, &r1);
+    TEST_CHECK(state.calls[1] == 40 && r1 == 40);
+    memset(&state, 0, sizeof(state));
+    state.admit = 2;
+    test_chain_run(&state, true, 7, &r0, &r1);
+    TEST_CHECK(state.calls[1] == 40 && state.admitted == UC_ERR_OK);
+    memset(&state, 0, sizeof(state));
+    state.admit = 2;
+    state.grant = 1000;
+    test_chain_run(&state, true, 8, &r0, &r1);
+    TEST_CHECK(state.calls[1] == 40 && r1 == 40);
+
+    // Admitted, guard open, a budget for five entries and one unit over:
+    // five entries pass the hook, and the guest runs the same instructions.
+    memset(&state, 0, sizeof(state));
+    state.admit = 2;
+    state.grant = 11;
+    test_chain_run(&state, true, 7, &r0, &r1);
+    TEST_CHECK(state.calls[0] == 40 && state.calls[1] == 35 && state.calls[2] == 40);
+    TEST_CHECK(r0 == 40 && r1 == 40);
+
+    // A stop requested by another block's hook is served at once, whatever
+    // the budget; resumed, the remaining entries are chained.
+    memset(&state, 0, sizeof(state));
+    state.admit = 2;
+    state.grant = 1000;
+    state.stop_at = 10;
+    test_chain_run(&state, true, 7, &r0, &r1);
+    TEST_CHECK(state.calls[0] == 41 && state.calls[1] == 1 && state.calls[2] == 40);
+    TEST_CHECK(r0 == 40 && r1 == 40);
+
+    // A translation flush ends every admission and leaves the budget alone:
+    // the new translation calls its hook once, is admitted again and spends
+    // what was left. 38 of the 40 entries are chained.
+    memset(&state, 0, sizeof(state));
+    state.admit = 2;
+    state.grant = 1000;
+    state.stop_at = 10;
+    state.flush_on_stop = true;
+    test_chain_run(&state, true, 7, &r0, &r1);
+    TEST_CHECK(state.calls[0] == 41 && state.calls[1] == 2 && state.calls[2] == 40);
+    TEST_CHECK(state.left == 1000 - 2 * 38);
+    TEST_CHECK(r0 == 40 && r1 == 40);
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
+             {"test_arm_embedder_store_watched", test_arm_embedder_store_watched},
+             {"test_arm_embedder_block_chains", test_arm_embedder_block_chains},
+             {"test_thumb_it_memory_hook", test_thumb_it_memory_hook},
              {"test_arm_neon_single_lane_64_shift", test_arm_neon_single_lane_64_shift},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},

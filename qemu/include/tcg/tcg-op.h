@@ -50,8 +50,10 @@ static inline void gen_uc_tracecode(TCGContext *tcg_ctx, int32_t size, int32_t t
     // embedder: with a translation filter installed, block hooks go through
     // helper_uc_tracecode, whose budgeted accounting enters fast blocks
     // without calling the hook.
+    // Block chains use the helper too: it ends the admission window.
     if (puc->hooks_count[hook_type] == 1 && !(type & UC_HOOK_FLAG_NO_STOP)
-            && !(hook_type == UC_HOOK_BLOCK_IDX && puc->embedder_insn_filter)) {
+            && !(hook_type == UC_HOOK_BLOCK_IDX &&
+                 (puc->embedder_insn_filter || puc->embedder_chains))) {
         cur = puc->hook[hook_type].head;
         
         while (cur) {

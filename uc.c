@@ -537,6 +537,11 @@ uc_err uc_close(uc_engine *uc)
     if (uc->embedder_io_pcs) {
         g_hash_table_destroy(uc->embedder_io_pcs);
     }
+    while (uc->embedder_chain_chunks) {
+        struct uc_embedder_chain_chunk *next = uc->embedder_chain_chunks->next;
+        g_free(uc->embedder_chain_chunks);
+        uc->embedder_chain_chunks = next;
+    }
 
     // Cleanup internally.
     if (uc->release) {
@@ -2187,8 +2192,20 @@ void helper_uc_traceopcode(struct hook *hook, uint64_t arg1, uint64_t arg2,
 
 void helper_uc_tracecode(int32_t size, uc_hook_idx index, void *handle,
                          int64_t address);
+static void uc_tracecode_hooks(int32_t size, uc_hook_idx index, void *handle,
+                               int64_t address);
 void helper_uc_tracecode(int32_t size, uc_hook_idx index, void *handle,
                          int64_t address)
+{
+    uc_tracecode_hooks(size, index, handle, address);
+    // embedder: a block can be admitted to chains only from its own hooks.
+    if ((index & UC_HOOK_IDX_MASK) == UC_HOOK_BLOCK_IDX) {
+        ((struct uc_struct *)handle)->embedder_chain_cell = NULL;
+    }
+}
+
+static void uc_tracecode_hooks(int32_t size, uc_hook_idx index, void *handle,
+                               int64_t address)
 {
     struct uc_struct *uc = handle;
     struct list_item *cur;
@@ -3323,6 +3340,39 @@ uc_err uc_embedder_unwatch(uc_engine *uc, uint64_t address, uint64_t size)
     return UC_ERR_OK;
 }
 
+// embedder: whether a store into [address, address + size) is certain to
+// reach watched write hooks in page hooks mode: every target page the range
+// touches holds a watched 1 KiB page, so its stores always take the slow
+// path. A store into another page reaches those hooks only when it takes
+// the slow path for a reason of the engine's own, such as a TLB miss, and
+// the same store done again may not.
+UNICORN_EXPORT
+bool uc_embedder_store_watched(uc_engine *uc, uint64_t address, uint64_t size)
+{
+    uint64_t last = address + size - 1;
+    uint64_t target, page;
+
+    if (uc->embedder_watch == NULL || size == 0 || last < address ||
+        last > 0xffffffffULL) {
+        return false;
+    }
+    for (target = address & ~(uint64_t)uc->target_page_align; target <= last;
+         target += uc->target_page_size) {
+        bool watched = false;
+        for (page = target >> 10;
+             page <= (target + uc->target_page_align) >> 10; page++) {
+            if (uc->embedder_watch[page >> 3] & (1 << (page & 7))) {
+                watched = true;
+                break;
+            }
+        }
+        if (!watched) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // embedder: install (or with filter NULL remove) the ARM translation filter and
 // the restart callback (see uc_priv.h). Translations made under the previous
 // setting are flushed.
@@ -3374,10 +3424,15 @@ uc_err uc_embedder_request_restart(uc_engine *uc)
 // 128: translated blocks count guest instructions in CPUState.
 // 256: fast ARM blocks debit the coarse interactive budget in translated code.
 // 512: ABI-1 Cortex-A7 accepted-TLBI owner queue.
+// 1024: block chains (uc_embedder_set_block_chains, _block_chain, _admit_block).
+// 2048: memory read and write hooks that return into their block leave
+//       ITSTATE as translated code expects it (cputlb.c, EMBEDDER_HOOKS_RETURN).
+// 4096: uc_embedder_store_watched.
 UNICORN_EXPORT
 uint32_t uc_embedder_features(void)
 {
-    return 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512;
+    return 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 |
+           4096;
 }
 
 UNICORN_EXPORT
@@ -3505,6 +3560,97 @@ UNICORN_EXPORT
 void *uc_embedder_accounting(uc_engine *uc)
 {
     return &uc->embedder_acct;
+}
+
+// embedder: block chains. One admitted run can cover several translated
+// blocks without a block hook call for each. See uc_embedder_chain in
+// uc_priv.h for the record and the entry test.
+//
+// uc_embedder_set_block_chains selects whether translated blocks carry the
+// test. Translated blocks change, so they are flushed. Nothing is admitted
+// and the budget is zero until the embedder says otherwise, so enabling it
+// alone changes no behaviour.
+UNICORN_EXPORT
+uc_err uc_embedder_set_block_chains(uc_engine *uc, bool enabled)
+{
+    UC_INIT(uc);
+    if (uc->embedder_chains != enabled) {
+        uc->embedder_chains = enabled;
+        uc->embedder_chain.budget = 0;
+        uc->cpu->cflags_next_tb = -1;
+        uc->tb_flush(uc);
+    }
+    restore_jit_state(uc);
+    return UC_ERR_OK;
+}
+
+// embedder: the record translated code tests and updates. Layout: int64
+// budget, u64 last, u32 guards[64]. Valid for the engine's lifetime.
+UNICORN_EXPORT
+void *uc_embedder_block_chain(uc_engine *uc)
+{
+    return &uc->embedder_chain;
+}
+
+// embedder: from a block hook, admit the block the hook was called for.
+// `weight` is what one hookless entry of it spends from the budget
+// (1..INT32_MAX), `key` is the guard value its page slot must hold
+// (not UINT32_MAX), and `tag` is what such an entry leaves in `last`.
+// weight 0 withdraws the admission. The admission lasts until the
+// translation dies; it describes that translation only.
+UNICORN_EXPORT
+uc_err uc_embedder_admit_block(uc_engine *uc, uint32_t weight, uint32_t key,
+                               uint64_t tag)
+{
+    uc_embedder_chain_cell *cell = uc->embedder_chain_cell;
+    if (!cell || weight > INT32_MAX || key == UC_EMBEDDER_CHAIN_NONE) {
+        return UC_ERR_ARG;
+    }
+    cell->weight = weight;
+    cell->tag = tag;
+    cell->key = weight ? key : UC_EMBEDDER_CHAIN_NONE;
+    return UC_ERR_OK;
+}
+
+// A cell for a block being translated, or NULL without memory.
+uc_embedder_chain_cell *uc_embedder_chain_cell_new(struct uc_struct *uc)
+{
+    struct uc_embedder_chain_chunk *chunk = uc->embedder_chain_chunk;
+    uc_embedder_chain_cell *cell;
+
+    if (!chunk || uc->embedder_chain_used == UC_EMBEDDER_CHAIN_CHUNK) {
+        struct uc_embedder_chain_chunk *next =
+            chunk ? chunk->next : uc->embedder_chain_chunks;
+        if (!next) {
+            next = g_try_malloc(sizeof(*next));
+            if (!next) {
+                return NULL;
+            }
+            next->next = NULL;
+            if (chunk) {
+                chunk->next = next;
+            } else {
+                uc->embedder_chain_chunks = next;
+            }
+        }
+        uc->embedder_chain_chunk = chunk = next;
+        uc->embedder_chain_used = 0;
+    }
+    cell = &chunk->cells[uc->embedder_chain_used++];
+    cell->key = UC_EMBEDDER_CHAIN_NONE;
+    cell->weight = 0;
+    cell->tag = 0;
+    return cell;
+}
+
+// Every translation died: their cells are free again. The budget stays as
+// it is: the engine also flushes on its own when the code buffer is full,
+// and the embedder counts what a chain used from what is left of it.
+void uc_embedder_chain_flush(struct uc_struct *uc)
+{
+    uc->embedder_chain_chunk = NULL;
+    uc->embedder_chain_used = 0;
+    uc->embedder_chain_cell = NULL;
 }
 
 // Host-only cumulative counters; read while no emulation runs. See uc_priv.h.
