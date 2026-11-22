@@ -537,6 +537,24 @@ struct uc_struct {
     bool tci_return_pending; // TCI helper asks for an unchained return
     /* Bumped whenever a translation dies, so cached targets can be dropped. */
     uint64_t embedder_tb_epoch;
+    /* Data-access hooks matching one 4 KiB page, per list (0 read, 1 write),
+       valid while embedder_hook_gen is unchanged. Bumped on every hook list
+       change. */
+    uint64_t embedder_hook_gen;
+    struct embedder_hook_page {
+        uint64_t page;
+        uint64_t gen;
+        int n; /* -1: some hook covers only part of the page */
+        struct hook *h[8];
+    } embedder_hook_pages[2][64];
+    /* The watchpoint flags of a 4 KiB physical page that its data-access hooks
+       and page watches give (embedder_page_hook_flags), valid while
+       embedder_hook_gen is unchanged. A change of the page watches bumps it. */
+    struct embedder_flags_page {
+        uint64_t page;
+        uint64_t gen;
+        int flags;
+    } embedder_flags_pages[64];
 };
 
 // Metadata stub for the variable-size cpu context used with uc_context_*()

@@ -1091,6 +1091,10 @@ static void clear_deleted_hooks(uc_engine *uc)
     struct hook *hook;
     int i;
 
+    /* The cached hook matches change only when a hook leaves the lists. */
+    if (uc->hooks_to_del.head != NULL) {
+        uc->embedder_hook_gen++;
+    }
     for (cur = uc->hooks_to_del.head;
          cur != NULL && (hook = (struct hook *)cur->data); cur = cur->next) {
         assert(hook->to_delete);
@@ -2099,6 +2103,8 @@ uc_err uc_hook_add(uc_engine *uc, uc_hook *hh, int type, void *callback,
         i++;
     }
 
+    uc->embedder_hook_gen++;
+
     // we didn't use the hook
     // TODO: return an error?
     if (hook->refs == 0) {
@@ -2122,6 +2128,8 @@ uc_err uc_hook_del(uc_engine *uc, uc_hook hh)
     struct hook *hook = (struct hook *)hh;
 
     UC_INIT(uc);
+
+    uc->embedder_hook_gen++;
 
     // we can't dereference hook->type if hook is invalid
     // so for now we need to iterate over all possible types to remove the hook
@@ -3264,6 +3272,7 @@ uc_err uc_embedder_set_hook_watched(uc_engine *uc, uc_hook hh, bool watched)
     UC_INIT(uc);
     if (hook->embedder_watched != watched) {
         hook->embedder_watched = watched;
+        uc->embedder_hook_gen++;
         uc->tcg_flush_tlb(uc);
     }
     restore_jit_state(uc);
@@ -3290,8 +3299,10 @@ uc_err uc_embedder_watch(uc_engine *uc, uint64_t address, uint64_t size)
             changed = true;
         }
     }
-    if (changed)
+    if (changed) {
+        uc->embedder_hook_gen++;
         uc->tcg_flush_tlb(uc);
+    }
     restore_jit_state(uc);
     return UC_ERR_OK;
 }
@@ -3317,8 +3328,10 @@ uc_err uc_embedder_unwatch(uc_engine *uc, uint64_t address, uint64_t size)
             }
         }
     }
-    if (changed)
+    if (changed) {
+        uc->embedder_hook_gen++;
         uc->tcg_flush_tlb(uc);
+    }
     restore_jit_state(uc);
     return UC_ERR_OK;
 }

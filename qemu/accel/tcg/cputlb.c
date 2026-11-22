@@ -842,6 +842,63 @@ static bool embedder_device_access(struct list_item *cur, hwaddr paddr)
     return false;
 }
 
+/* embedder: the data-access hooks of list `which` (0 read, 1 write) that can
+   match an address of the page holding paddr, cached per page while the hook
+   lists are unchanged. NULL when a hook covers only part of the page (or too
+   many match): walk the list. Callers still bound-check each hook. */
+static struct embedder_hook_page *embedder_hook_page(struct uc_struct *uc,
+                                                      int which, hwaddr paddr)
+{
+    hwaddr page = paddr & ~(hwaddr)(TARGET_PAGE_SIZE - 1);
+    hwaddr last = page + TARGET_PAGE_SIZE - 1;
+    struct embedder_hook_page *e =
+        &uc->embedder_hook_pages[which][(page >> TARGET_PAGE_BITS) & 63];
+    struct list_item *cur;
+
+    if (likely(uc->embedder_hook_gen && e->gen == uc->embedder_hook_gen &&
+               e->page == page)) {
+        return e->n < 0 ? NULL : e;
+    }
+    e->page = page;
+    e->gen = uc->embedder_hook_gen;
+    e->n = 0;
+    cur = uc->hook[which ? UC_HOOK_MEM_WRITE_IDX : UC_HOOK_MEM_READ_IDX].head;
+    for (; cur != NULL; cur = cur->next) {
+        struct hook *hook = (struct hook *)cur->data;
+        if (hook->to_delete) {
+            continue;
+        }
+        if (hook->begin <= hook->end) {
+            if (hook->begin > last || hook->end < page) {
+                continue;
+            }
+            if (hook->begin > page || hook->end < last) {
+                e->n = -1;
+                return NULL;
+            }
+        }
+        if (e->n == 8) {
+            e->n = -1;
+            return NULL;
+        }
+        e->h[e->n++] = hook;
+    }
+    return e;
+}
+
+/* embedder: embedder_device_access over the cached hooks of a page. */
+static bool embedder_device_access_page(struct embedder_hook_page *e,
+                                        hwaddr paddr)
+{
+    int i;
+    for (i = 0; i < e->n; i++) {
+        struct hook *hook = e->h[i];
+        if (!hook->embedder_watched && HOOK_BOUND_CHECK(hook, paddr))
+            return true;
+    }
+    return false;
+}
+
 /* embedder: is any 1 KiB page of [first, last] watched? */
 static bool embedder_watched(struct uc_struct *uc, hwaddr first, hwaddr last)
 {
@@ -876,11 +933,20 @@ static int embedder_page_hook_flags(struct uc_struct *uc, hwaddr page)
 {
     hwaddr last = page + TARGET_PAGE_SIZE - 1;
     int flags = 0;
+    struct embedder_flags_page *e =
+        &uc->embedder_flags_pages[(page >> TARGET_PAGE_BITS) & 63];
+    if (likely(uc->embedder_hook_gen && e->gen == uc->embedder_hook_gen &&
+               e->page == page)) {
+        return e->flags;
+    }
     if (embedder_hook_overlaps(uc, uc->hook[UC_HOOK_MEM_READ_IDX].head, page, last) ||
         embedder_hook_overlaps(uc, uc->hook[UC_HOOK_MEM_READ_AFTER_IDX].head, page, last))
         flags |= BP_MEM_READ;
     if (embedder_hook_overlaps(uc, uc->hook[UC_HOOK_MEM_WRITE_IDX].head, page, last))
         flags |= BP_MEM_WRITE;
+    e->page = page;
+    e->gen = uc->embedder_hook_gen;
+    e->flags = flags;
     return flags;
 }
 
@@ -1791,13 +1857,27 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
     // now it is read on mapped memory
     // patch issue #1041 multiple UC_HOOK_MEM callbacks for unaligned access
     if (!code_read && !uc->size_recur_mem) {
+        struct embedder_hook_page *hp = embedder_hook_page(uc, 0, paddr);
+        struct list_item *hcur = hp ? NULL : uc->hook[UC_HOOK_MEM_READ_IDX].head;
+        int hi = 0;
         if (uc->embedder_insn_filter &&
-            (embedder_device_access(uc->hook[UC_HOOK_MEM_READ_IDX].head, paddr) ||
+            ((hp ? embedder_device_access_page(hp, paddr)
+                 : embedder_device_access(uc->hook[UC_HOOK_MEM_READ_IDX].head, paddr)) ||
              embedder_device_access(uc->hook[UC_HOOK_MEM_READ_AFTER_IDX].head, paddr))) {
             embedder_restart_insn(uc->cpu, retaddr, true);
         }
         // this is date reading
-        HOOK_FOREACH(uc, hook, UC_HOOK_MEM_READ) {
+        for (;;) {
+            if (hp) {
+                if (hi >= hp->n)
+                    break;
+                hook = hp->h[hi++];
+            } else {
+                if (hcur == NULL)
+                    break;
+                hook = (struct hook *)hcur->data;
+                hcur = hcur->next;
+            }
             if (hook->to_delete)
                 continue;
             if (!HOOK_BOUND_CHECK(hook, paddr))
@@ -2326,12 +2406,26 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
     mr = uc->memory_mapping(uc, paddr);
 
     if (!uc->size_recur_mem) { // disabling write callback if in recursive call
+        struct embedder_hook_page *hp = embedder_hook_page(uc, 1, paddr);
+        struct list_item *hcur = hp ? NULL : uc->hook[UC_HOOK_MEM_WRITE_IDX].head;
+        int hi = 0;
         if (uc->embedder_insn_filter &&
-            embedder_device_access(uc->hook[UC_HOOK_MEM_WRITE_IDX].head, paddr)) {
+            (hp ? embedder_device_access_page(hp, paddr)
+                : embedder_device_access(uc->hook[UC_HOOK_MEM_WRITE_IDX].head, paddr))) {
             embedder_restart_insn(uc->cpu, retaddr, true);
         }
         // Unicorn: callback on memory write
-        HOOK_FOREACH(uc, hook, UC_HOOK_MEM_WRITE) {
+        for (;;) {
+            if (hp) {
+                if (hi >= hp->n)
+                    break;
+                hook = hp->h[hi++];
+            } else {
+                if (hcur == NULL)
+                    break;
+                hook = (struct hook *)hcur->data;
+                hcur = hcur->next;
+            }
             if (hook->to_delete)
                 continue;
             if (!HOOK_BOUND_CHECK(hook, paddr))
