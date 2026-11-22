@@ -298,6 +298,8 @@ typedef struct uc_backing_observer {
     size_t size;
     uint64_t *pages;
     unsigned shift;
+    /* Optional: one bit per 64-page word of `pages` that holds a set bit. */
+    uint64_t *summary;
 } uc_backing_observer;
 #define UC_BACKING_OBSERVERS 32
 

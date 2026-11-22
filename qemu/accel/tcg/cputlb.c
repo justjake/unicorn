@@ -1019,6 +1019,12 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
                 __atomic_fetch_or(&r->pages[page >> 6],
                                   UINT64_C(1) << (page & 63),
                                   __ATOMIC_RELAXED);
+                if (r->summary) {
+                    size_t word = page >> 6;
+                    __atomic_fetch_or(&r->summary[word >> 6],
+                                      UINT64_C(1) << (word & 63),
+                                      __ATOMIC_RELAXED);
+                }
                 break;
             }
         }

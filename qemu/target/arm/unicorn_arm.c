@@ -168,6 +168,13 @@ static uc_err read_cp_reg(CPUARMState *env, uc_arm_cp_reg *cp)
         return UC_ERR_ARG;
     }
 
+    if (cp->cp == 15 && !cp->is64 && cp->crn == 0 && cp->crm == 0 &&
+        cp->opc1 == 0 && cp->opc2 == 5 && ri->readfn) {
+        /* MPIDR is computed from the host-set affinity; it has no raw field. */
+        cp->val = ri->readfn(env, ri) & 0xFFFFFFFF;
+        return UC_ERR_OK;
+    }
+
     cp->val = read_raw_cp_reg(env, ri);
 
     if (!cp->is64) {
@@ -181,6 +188,19 @@ static uc_err write_cp_reg(CPUARMState *env, uc_arm_cp_reg *cp)
 {
     ARMCPU *cpu = ARM_CPU(env->uc->cpu);
     int ns = cp->sec ? 0 : 1;
+    /* Host configuration of the physical CPU identity. MPIDR has no writable
+     * CPUARMState field: falling through would write at fieldoffset zero. */
+    if (cp->cp == 15 && !cp->is64 && cp->crn == 0 && cp->crm == 0 &&
+        cp->opc1 == 0 && cp->opc2 == 5) {
+        const uint64_t affinity_mask = UINT64_C(0xffffff);
+        if (cp->val & ~(affinity_mask | (UINT64_C(1) << 31))) {
+            return UC_ERR_ARG;
+        }
+        cpu->mp_affinity = cp->val & affinity_mask;
+        /* EL1 reads of MPIDR see VMPIDR when EL2 exists. */
+        env->cp15.vmpidr_el2 = (cp->val & affinity_mask) | (UINT64_C(1) << 31);
+        return UC_ERR_OK;
+    }
     const ARMCPRegInfo *ri = get_arm_cp_reginfo(
         cpu->cp_regs, ENCODE_CP_REG(cp->cp, cp->is64, ns, cp->crn, cp->crm,
                                     cp->opc1, cp->opc2));
