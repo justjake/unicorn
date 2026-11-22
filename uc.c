@@ -2233,6 +2233,16 @@ void helper_uc_tracecode(int32_t size, uc_hook_idx index, void *handle,
         revert_uc_emu_stop(uc);
     }
 
+    // embedder: a store rewrote the rest of this block (see
+    // tb_invalidate_phys_page_range__locked): translate again from this
+    // instruction before its hook runs, so the hook sees the new word.
+    if (index == UC_HOOK_CODE_IDX && uc->embedder_code_stale) {
+        uc->embedder_code_stale = false;
+        if (uc->cpu && size != 0) {
+            uc->embedder_code_stale_restart(uc);
+        }
+    }
+
     // embedder: asynchronous pauses apply at every translated block boundary,
     // including slow blocks and modes that do not use instruction accounting.
     if (index == UC_HOOK_BLOCK_IDX && uc->embedder_acct.pause_requested &&
@@ -3470,6 +3480,21 @@ uc_err uc_embedder_set_block_exits(uc_engine *uc, bool enabled)
     UC_INIT(uc);
     if (uc->embedder_block_exits != enabled) {
         uc->embedder_block_exits = enabled;
+        uc->cpu->cflags_next_tb = -1;
+        uc->tb_flush(uc);
+    }
+    restore_jit_state(uc);
+    return UC_ERR_OK;
+}
+
+// embedder: select inline-tested block-entry exits that keep the exit
+// helper's behavior (retries, PC restore), without per-access helpers.
+UNICORN_EXPORT
+uc_err uc_embedder_set_entry_exits(uc_engine *uc, bool enabled)
+{
+    UC_INIT(uc);
+    if (uc->embedder_entry_exits != enabled) {
+        uc->embedder_entry_exits = enabled;
         uc->cpu->cflags_next_tb = -1;
         uc->tb_flush(uc);
     }

@@ -36,6 +36,8 @@
 #include "sysemu/tcg.h"
 #include "uc_priv.h"
 
+static void embedder_code_stale_restart(struct uc_struct *uc);
+
 /*
  * embedder: FUJIMOD_PERF_MAP writes one perf-map line per installed
  * translation so host profilers can attribute samples to guest blocks. The
@@ -1317,6 +1319,7 @@ void tcg_exec_init(struct uc_struct *uc, uint32_t tb_size)
     uc->uc_invalidate_tb = uc_invalidate_tb;
     uc->uc_gen_tb = uc_gen_tb;
     uc->tb_flush = uc_tb_flush;
+    uc->embedder_code_stale_restart = embedder_code_stale_restart;
 
     /* Inline hooks optimization */
     uc->add_inline_hook = uc_add_inline_hook;
@@ -1977,6 +1980,8 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
  * user-mode: call with mmap_lock held.
  * !user-mode: call with all @pages locked.
  */
+static int embedder_insn_index(TranslationBlock *tb, uintptr_t retaddr);
+
 static void
 tb_invalidate_phys_page_range__locked(struct uc_struct *uc, struct page_collection *pages,
                                       PageDesc *p, tb_page_addr_t start,
@@ -2045,6 +2050,20 @@ tb_invalidate_phys_page_range__locked(struct uc_struct *uc, struct page_collecti
                                      &current_flags);
             }
 #endif /* TARGET_HAS_PRECISE_SMC */
+#ifndef TARGET_HAS_PRECISE_SMC
+            /* embedder: without a translation filter, a store that rewrites
+               the rest of the block it runs in must make the next
+               instruction hook restart at its own address (an instruction
+               hook never runs a stale translation of its instruction). */
+            if (retaddr && !uc->embedder_insn_filter &&
+                uc->hook[UC_HOOK_CODE_IDX].head != NULL &&
+                tcg_tb_lookup(uc->tcg_ctx, retaddr) == tb) {
+                int index = embedder_insn_index(tb, retaddr);
+                if (index >= 0 && index < (int)tb->icount - 1) {
+                    uc->embedder_code_stale = true;
+                }
+            }
+#endif
             tb_phys_invalidate__locked(uc->tcg_ctx, tb, cause);
         }
     }
@@ -2282,6 +2301,19 @@ void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember)
         uc->embedder_restart(uc->embedder_filter_user, pc);
     }
     cpu->cflags_next_tb = curr_cflags(cpu) | CF_LAST_IO | 1;
+    if (uc->nested_level == 1) {
+        tb_exec_unlock(uc);
+    }
+    cpu_loop_exit_noexc(cpu);
+}
+
+/* embedder: translate again from the current instruction (its hook has not
+   run yet), after a store rewrote the rest of its block. */
+static void embedder_code_stale_restart(struct uc_struct *uc)
+{
+    CPUState *cpu = uc->cpu;
+
+    cpu->cflags_next_tb = -1;
     if (uc->nested_level == 1) {
         tb_exec_unlock(uc);
     }

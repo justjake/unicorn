@@ -52,6 +52,28 @@ static inline void gen_tb_start(TCGContext *tcg_ctx, TranslationBlock *tb)
                             tcg_ctx->embedder_exitreq_label);
         tcg_temp_free_i32(tcg_ctx, count);
     } else {
+        TCGLabel *skip = NULL;
+        if (tcg_ctx->uc->embedder_entry_exits && tcg_ctx->delay_slot_flag == NULL) {
+            // embedder: the helper acts only when an exit is requested or a
+            // block retry is pending; test both inline, at block entry where
+            // no temporary is live, and call it when either holds.
+            TCGLabel *call = gen_new_label(tcg_ctx);
+            TCGv_i32 count = tcg_temp_new_i32(tcg_ctx);
+            skip = gen_new_label(tcg_ctx);
+            tcg_gen_ld_i32(tcg_ctx, count, tcg_ctx->cpu_env,
+                           offsetof(ArchCPU, neg.icount_decr.u32) -
+                           offsetof(ArchCPU, env));
+            tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_LT, count, 0, call);
+            tcg_temp_free_i32(tcg_ctx, count);
+            TCGv_i32 retry = tcg_temp_new_i32(tcg_ctx);
+            TCGv_ptr pu = tcg_const_ptr(tcg_ctx, tcg_ctx->uc);
+            tcg_gen_ld_i32(tcg_ctx, retry, pu,
+                           offsetof(struct uc_struct, embedder_retry_limit));
+            tcg_temp_free_ptr(tcg_ctx, pu);
+            tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_EQ, retry, 0, skip);
+            tcg_temp_free_i32(tcg_ctx, retry);
+            gen_set_label(tcg_ctx, call);
+        }
         TCGv_ptr puc = tcg_const_ptr(tcg_ctx, tcg_ctx->uc);
         TCGv_i32 tmp = tcg_const_i32(tcg_ctx, 0);
         // Unicorn:
@@ -63,6 +85,9 @@ static inline void gen_tb_start(TCGContext *tcg_ctx, TranslationBlock *tb)
         gen_helper_check_exit_request(tcg_ctx, puc, tmp);
         tcg_temp_free_i32(tcg_ctx, tmp);
         tcg_temp_free_ptr(tcg_ctx, puc);
+        if (skip) {
+            gen_set_label(tcg_ctx, skip);
+        }
     }
 
     if (tcg_ctx->uc->embedder_instruction_counter &&

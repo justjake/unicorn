@@ -51,7 +51,8 @@ static inline void gen_uc_tracecode(TCGContext *tcg_ctx, int32_t size, int32_t t
     // helper_uc_tracecode, whose budgeted accounting enters fast blocks
     // without calling the hook.
     if (puc->hooks_count[hook_type] == 1 && !(type & UC_HOOK_FLAG_NO_STOP)
-            && !(hook_type == UC_HOOK_BLOCK_IDX && puc->embedder_insn_filter)) {
+            && !(hook_type == UC_HOOK_BLOCK_IDX && puc->embedder_insn_filter)
+            && !(hook_type == UC_HOOK_CODE_IDX && !puc->embedder_insn_filter)) {
         cur = puc->hook[hook_type].head;
         
         while (cur) {

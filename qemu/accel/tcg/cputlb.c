@@ -852,7 +852,7 @@ static struct embedder_hook_page *embedder_hook_page(struct uc_struct *uc,
     hwaddr page = paddr & ~(hwaddr)(TARGET_PAGE_SIZE - 1);
     hwaddr last = page + TARGET_PAGE_SIZE - 1;
     struct embedder_hook_page *e =
-        &uc->embedder_hook_pages[which][(page >> TARGET_PAGE_BITS) & 63];
+        &uc->embedder_hook_pages[which][(page >> TARGET_PAGE_BITS) & (UC_EMBEDDER_PAGE_CACHE - 1)];
     struct list_item *cur;
 
     if (likely(uc->embedder_hook_gen && e->gen == uc->embedder_hook_gen &&
@@ -934,7 +934,7 @@ static int embedder_page_hook_flags(struct uc_struct *uc, hwaddr page)
     hwaddr last = page + TARGET_PAGE_SIZE - 1;
     int flags = 0;
     struct embedder_flags_page *e =
-        &uc->embedder_flags_pages[(page >> TARGET_PAGE_BITS) & 63];
+        &uc->embedder_flags_pages[(page >> TARGET_PAGE_BITS) & (UC_EMBEDDER_PAGE_CACHE - 1)];
     if (likely(uc->embedder_hook_gen && e->gen == uc->embedder_hook_gen &&
                e->page == page)) {
         return e->flags;

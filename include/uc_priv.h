@@ -511,11 +511,17 @@ struct uc_struct {
     GHashTable *embedder_io_pcs;  // guest PCs of instructions ending their block
     uint32_t embedder_retry_limit; // block hook: retranslate this block this short
     bool embedder_restart_request; // write hook: restart the storing instruction
+    void (*embedder_code_stale_restart)(struct uc_struct *uc);
+    bool embedder_code_stale; // a store rewrote the rest of the running block; the next instruction hook restarts there
     bool embedder_tb_thumb;        // Thumb state of the block being translated
     bool embedder_tb_slow;         // the filter asked for the block hook on every entry
     // embedder: block-exit mode tests requests inline at block entry and omits
     // per-access helpers; exact mode keeps the memory-access exit checks.
     bool embedder_block_exits;
+    // embedder: entry-exit mode keeps the exit helper at block entry (it
+    // handles retries and exits that restore PC) but calls it only when a
+    // request or retry is pending, and omits the per-access helpers.
+    bool embedder_entry_exits;
     bool embedder_instruction_counter;
     // embedder: budgeted block accounting (uc_embedder_accounting). A block
     // translated as fast (block hook size bit 30) runs without calling hooks:
@@ -543,12 +549,13 @@ struct uc_struct {
        valid while embedder_hook_gen is unchanged. Bumped on every hook list
        change. */
     uint64_t embedder_hook_gen;
+#define UC_EMBEDDER_PAGE_CACHE 512 /* entries, a power of two */
     struct embedder_hook_page {
         uint64_t page;
         uint64_t gen;
         int n; /* -1: some hook covers only part of the page */
         struct hook *h[8];
-    } embedder_hook_pages[2][64];
+    } embedder_hook_pages[2][UC_EMBEDDER_PAGE_CACHE];
     /* The watchpoint flags of a 4 KiB physical page that its data-access hooks
        and page watches give (embedder_page_hook_flags), valid while
        embedder_hook_gen is unchanged. A change of the page watches bumps it. */
@@ -556,7 +563,7 @@ struct uc_struct {
         uint64_t page;
         uint64_t gen;
         int flags;
-    } embedder_flags_pages[64];
+    } embedder_flags_pages[UC_EMBEDDER_PAGE_CACHE];
 };
 
 // Metadata stub for the variable-size cpu context used with uc_context_*()

@@ -346,6 +346,9 @@ void tcg_tb_insert(TCGContext *tcg_ctx, TranslationBlock *tb)
 
 void tcg_tb_remove(TCGContext *tcg_ctx, TranslationBlock *tb)
 {
+    if (tcg_ctx->tb_lookup_last == tb) {
+        tcg_ctx->tb_lookup_last = NULL;
+    }
     g_tree_remove(tcg_ctx->tree, &tb->tc);
 }
 
@@ -356,10 +359,14 @@ void tcg_tb_remove(TCGContext *tcg_ctx, TranslationBlock *tb)
  */
 TranslationBlock *tcg_tb_lookup(TCGContext *tcg_ctx, uintptr_t tc_ptr)
 {
-    TranslationBlock *tb;
+    TranslationBlock *tb = tcg_ctx->tb_lookup_last;
 
+    if (tb && tc_ptr - (uintptr_t)tb->tc.ptr < tb->tc.size) {
+        return tb;
+    }
     struct tb_tc s = { .ptr = (void *)tc_ptr };
     tb = g_tree_lookup(tcg_ctx->tree, &s);
+    tcg_ctx->tb_lookup_last = tb;
 
     return tb;
 }
@@ -379,6 +386,7 @@ size_t tcg_nb_tbs(TCGContext *tcg_ctx)
 
 static void tcg_region_tree_reset_all(TCGContext *tcg_ctx)
 {
+    tcg_ctx->tb_lookup_last = NULL;
     g_tree_ref(tcg_ctx->tree);
     g_tree_destroy(tcg_ctx->tree);
 }
@@ -542,6 +550,7 @@ void tcg_region_init(TCGContext *tcg_ctx)
     }
 
     tcg_ctx->tree = g_tree_new(tb_tc_cmp);
+    tcg_ctx->tb_lookup_last = NULL;
     // Unicorn: Though this code is taken from CONFIG_USER_ONLY, it is crucial or
     //          tcg_ctx->region.current is 0 and we will miss a tb_flush when the
     //          buffer gets full.

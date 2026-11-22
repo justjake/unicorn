@@ -699,6 +699,8 @@ struct TCGContext {
     TCGv_ptr cpu_env;
     struct tcg_region_state region;
     GTree *tree;
+    /* The translation the last tcg_tb_lookup found; NULL once it leaves the tree. */
+    TranslationBlock *tb_lookup_last;
     TCGRegSet tcg_target_available_regs[TCG_TYPE_COUNT];
     TCGRegSet tcg_target_call_clobber_regs;
     int *indirect_reg_alloc_order;

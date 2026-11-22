@@ -45,6 +45,7 @@ struct EmbedderBlockGuard {
     TCGOp *count_low;
     TCGOp *count_high;
     TCGOp *size;
+    TCGOp *packed;
     TCGv_i32 fast_value;
     TCGv_i64 count_value;
     bool active;
@@ -83,14 +84,21 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
     tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_NE, paused, 0, helper);
     gen_set_label(tcg_ctx, pause_checked);
 
-    // Exact accounting keeps its ring write in the helper. Coarse interactive
-    // accounting is the only mode translated inline.
-    TCGv_i64 enabled = tcg_temp_new_i64(tcg_ctx);
+    // Coarse (2) and exact (1) accounting are translated inline; exact
+    // accounting also writes its ring entry. Anything else enters the helper.
+    TCGv_i64 enabled = tcg_temp_local_new_i64(tcg_ctx);
     ucp = tcg_const_ptr(tcg_ctx, uc);
     tcg_gen_ld_i64(tcg_ctx, enabled, ucp,
                    offsetof(struct uc_struct, embedder_acct.enabled));
     tcg_temp_free_ptr(tcg_ctx, ucp);
+#if TCG_TARGET_REG_BITS == 64
+    TCGv_i64 mode = tcg_temp_new_i64(tcg_ctx);
+    tcg_gen_subi_i64(tcg_ctx, mode, enabled, 1);
+    tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_GTU, mode, 1, helper);
+    tcg_temp_free_i64(tcg_ctx, mode);
+#else
     tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, enabled, 2, helper);
+#endif
 
     guard->count_value = tcg_temp_new_i64(tcg_ctx);
 #if TCG_TARGET_REG_BITS == 32
@@ -115,6 +123,36 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
     tcg_gen_st_i64(tcg_ctx, budget, ucp,
                    offsetof(struct uc_struct, embedder_acct.budget));
     tcg_temp_free_ptr(tcg_ctx, ucp);
+#if TCG_TARGET_REG_BITS == 64
+    tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, enabled, 1, body);
+    ucp = tcg_const_ptr(tcg_ctx, uc);
+    // Exact accounting: ring[head++ & mask] = start << 32 | count.
+    TCGv_i64 head = tcg_temp_new_i64(tcg_ctx);
+    TCGv_i64 mask = tcg_temp_new_i64(tcg_ctx);
+    TCGv_i64 index = tcg_temp_new_i64(tcg_ctx);
+    TCGv_ptr ring = tcg_temp_new_ptr(tcg_ctx);
+    TCGv_i64 packed = tcg_temp_new_i64(tcg_ctx);
+    tcg_gen_ld_i64(tcg_ctx, head, ucp, offsetof(struct uc_struct, embedder_acct.head));
+    tcg_gen_ld_i64(tcg_ctx, mask, ucp, offsetof(struct uc_struct, embedder_acct.mask));
+    tcg_gen_ld_ptr(tcg_ctx, ring, ucp, offsetof(struct uc_struct, embedder_acct.ring));
+    tcg_gen_and_i64(tcg_ctx, index, head, mask);
+    tcg_gen_shli_i64(tcg_ctx, index, index, 3);
+    TCGv_ptr slot = tcg_temp_new_ptr(tcg_ctx);
+    tcg_gen_trunc_i64_ptr(tcg_ctx, slot, index);
+    tcg_gen_add_ptr(tcg_ctx, slot, slot, ring);
+    tcg_gen_movi_i64(tcg_ctx, packed, 0);
+    guard->packed = tcg_last_op(tcg_ctx);
+    tcg_gen_st_i64(tcg_ctx, packed, slot, 0);
+    tcg_gen_addi_i64(tcg_ctx, head, head, 1);
+    tcg_gen_st_i64(tcg_ctx, head, ucp, offsetof(struct uc_struct, embedder_acct.head));
+    tcg_temp_free_ptr(tcg_ctx, slot);
+    tcg_temp_free_i64(tcg_ctx, packed);
+    tcg_temp_free_ptr(tcg_ctx, ring);
+    tcg_temp_free_i64(tcg_ctx, index);
+    tcg_temp_free_i64(tcg_ctx, mask);
+    tcg_temp_free_i64(tcg_ctx, head);
+    tcg_temp_free_ptr(tcg_ctx, ucp);
+#endif
     tcg_gen_br(tcg_ctx, body);
 
     gen_set_label(tcg_ctx, helper);
@@ -322,6 +360,11 @@ _end_loop:
                                (uint32_t)(db->tb->size / 4));
             if (embedder_guard.count_high) {
                 tcg_set_insn_param(embedder_guard.count_high, 1, 0);
+            }
+            if (embedder_guard.packed) {
+                tcg_set_insn_param(embedder_guard.packed, 1,
+                                   ((uint64_t)(uint32_t)db->pc_first << 32) |
+                                       (uint32_t)(db->tb->size / 4));
             }
         }
     }

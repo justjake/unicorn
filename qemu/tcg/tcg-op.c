@@ -2876,7 +2876,7 @@ void check_exit_request(TCGContext *tcg_ctx)
 // limited to block entry (uc->embedder_block_exits).
 static void check_exit_request_after_access(TCGContext *tcg_ctx)
 {
-    if (!tcg_ctx->uc->embedder_block_exits) {
+    if (!tcg_ctx->uc->embedder_block_exits && !tcg_ctx->uc->embedder_entry_exits) {
         check_exit_request(tcg_ctx);
     }
 }
