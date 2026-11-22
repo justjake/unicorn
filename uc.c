@@ -36,6 +36,8 @@ _Thread_local unsigned int uc_jit_toggle_count;
 #include "qemu/include/qemu/queue.h"
 #include "qemu-common.h"
 
+static void embedder_flush_tlb_flags(struct uc_struct *uc);
+
 // Block budgeting follows the performance finding in Tal Shiri's X-Turbo
 // (https://github.com/tals/X-Turbo): avoid per-instruction count callbacks.
 // Debit translated instruction counts, retrying a short final block before
@@ -534,6 +536,8 @@ uc_err uc_close(uc_engine *uc)
     uc->tb_flush(uc);
 
     g_free(uc->embedder_watch);
+    g_free(uc->embedder_flat[0].h);
+    g_free(uc->embedder_flat[1].h);
     if (uc->embedder_io_pcs) {
         g_hash_table_destroy(uc->embedder_io_pcs);
     }
@@ -2114,7 +2118,7 @@ uc_err uc_hook_add(uc_engine *uc, uc_hook *hh, int type, void *callback,
     // embedder: existing TLB entries do not carry the new hook's page flags
     if (uc->embedder_page_hooks && uc->init_done &&
         (type & (UC_HOOK_MEM_READ | UC_HOOK_MEM_READ_AFTER | UC_HOOK_MEM_WRITE))) {
-        uc->tcg_flush_tlb(uc);
+        embedder_flush_tlb_flags(uc);
     }
 
     restore_jit_state(uc);
@@ -3222,6 +3226,16 @@ void trace_end(uc_tracer *tracer, trace_loc loc, const char *fmt, ...)
 }
 #endif
 
+// embedder: flush the TLB for a change of page flags only (hooks, watches,
+// observers); the guest mapping is unchanged, so cached translation lookups
+// by virtual address stay valid.
+static void embedder_flush_tlb_flags(struct uc_struct *uc)
+{
+    uc->embedder_keep_code_caches = true;
+    uc->tcg_flush_tlb(uc);
+    uc->embedder_keep_code_caches = false;
+}
+
 // embedder: skip the guest-PC restore before memory-write hooks. Callers whose
 // write hooks never read the PC avoid a TB lookup per hooked store.
 UNICORN_EXPORT
@@ -3268,7 +3282,7 @@ uc_err uc_embedder_observe_backings(uc_engine *uc,
     uc->embedder_observer_count = count;
     /* Re-arm after the embedder clears its page flags. Cached writable TLB
      * entries must not bypass the next interval's first access. */
-    uc->tcg_flush_tlb(uc);
+    embedder_flush_tlb_flags(uc);
     restore_jit_state(uc);
     return UC_ERR_OK;
 }
@@ -3283,7 +3297,7 @@ uc_err uc_embedder_set_hook_watched(uc_engine *uc, uc_hook hh, bool watched)
     if (hook->embedder_watched != watched) {
         hook->embedder_watched = watched;
         uc->embedder_hook_gen++;
-        uc->tcg_flush_tlb(uc);
+        embedder_flush_tlb_flags(uc);
     }
     restore_jit_state(uc);
     return UC_ERR_OK;
@@ -3311,7 +3325,7 @@ uc_err uc_embedder_watch(uc_engine *uc, uint64_t address, uint64_t size)
     }
     if (changed) {
         uc->embedder_hook_gen++;
-        uc->tcg_flush_tlb(uc);
+        embedder_flush_tlb_flags(uc);
     }
     restore_jit_state(uc);
     return UC_ERR_OK;
@@ -3340,7 +3354,7 @@ uc_err uc_embedder_unwatch(uc_engine *uc, uint64_t address, uint64_t size)
     }
     if (changed) {
         uc->embedder_hook_gen++;
-        uc->tcg_flush_tlb(uc);
+        embedder_flush_tlb_flags(uc);
     }
     restore_jit_state(uc);
     return UC_ERR_OK;

@@ -292,7 +292,7 @@ struct CPUState {
 
     /* Embedder: recently resolved indirect targets, keyed by the same
      * (pc, cs_base, flags) the block lookup compares. */
-#define UC_EMBEDDER_TARGET_CACHE_SIZE 128
+#define UC_EMBEDDER_TARGET_CACHE_SIZE 1024
     struct {
         uint64_t pc;
         uint64_t cs_base;

@@ -349,6 +349,12 @@ void tcg_tb_remove(TCGContext *tcg_ctx, TranslationBlock *tb)
     if (tcg_ctx->tb_lookup_last == tb) {
         tcg_ctx->tb_lookup_last = NULL;
     }
+    for (int i = 0; i < 512; i++) {
+        if (tcg_ctx->embedder_sites[i].tb == tb) {
+            tcg_ctx->embedder_sites[i].ra = 0;
+            tcg_ctx->embedder_sites[i].tb = NULL;
+        }
+    }
     g_tree_remove(tcg_ctx->tree, &tb->tc);
 }
 
@@ -387,6 +393,7 @@ size_t tcg_nb_tbs(TCGContext *tcg_ctx)
 static void tcg_region_tree_reset_all(TCGContext *tcg_ctx)
 {
     tcg_ctx->tb_lookup_last = NULL;
+    memset(tcg_ctx->embedder_sites, 0, sizeof(tcg_ctx->embedder_sites));
     g_tree_ref(tcg_ctx->tree);
     g_tree_destroy(tcg_ctx->tree);
 }
@@ -551,6 +558,7 @@ void tcg_region_init(TCGContext *tcg_ctx)
 
     tcg_ctx->tree = g_tree_new(tb_tc_cmp);
     tcg_ctx->tb_lookup_last = NULL;
+    memset(tcg_ctx->embedder_sites, 0, sizeof(tcg_ctx->embedder_sites));
     // Unicorn: Though this code is taken from CONFIG_USER_ONLY, it is crucial or
     //          tcg_ctx->region.current is 0 and we will miss a tb_flush when the
     //          buffer gets full.

@@ -300,7 +300,9 @@ static void tlb_flush_by_mmuidx_async_work(CPUState *cpu, run_on_cpu_data data)
         tlb_flush_one_mmuidx_locked(env, mmu_idx, now);
     }
 
-    cpu_tb_jmp_cache_clear(cpu);
+    if (!cpu->uc->embedder_keep_code_caches) {
+        cpu_tb_jmp_cache_clear(cpu);
+    }
 
     if (to_clean == ALL_MMUIDX_BITS) {
         env_tlb(env)->c.full_flush_count = env_tlb(env)->c.full_flush_count + 1;
@@ -912,16 +914,52 @@ static bool embedder_watched(struct uc_struct *uc, hwaddr first, hwaddr last)
     return false;
 }
 
-/* embedder: does any live hook in the list cover part of [first, last]? A
-   watched hook covers only the watched pages of its range. */
-static bool embedder_hook_overlaps(struct uc_struct *uc, struct list_item *cur,
-                              hwaddr first, hwaddr last)
+/* embedder: the live hooks of the lists of `which` (0 read and read-after, 1
+   write) as one array, rebuilt when the hook lists or watches change. */
+static struct embedder_flat_hooks *embedder_flat_hooks(struct uc_struct *uc, int which)
 {
-    for (; cur != NULL; cur = cur->next) {
-        struct hook *hook = (struct hook *)cur->data;
-        if (!hook->to_delete &&
-            (hook->begin > hook->end || (hook->begin <= last && hook->end >= first)) &&
-            (!hook->embedder_watched || embedder_watched(uc, first, last)))
+    struct embedder_flat_hooks *f = &uc->embedder_flat[which];
+    int lists[2] = { which ? UC_HOOK_MEM_WRITE_IDX : UC_HOOK_MEM_READ_IDX,
+                     which ? -1 : UC_HOOK_MEM_READ_AFTER_IDX };
+
+    if (likely(uc->embedder_hook_gen && f->gen == uc->embedder_hook_gen)) {
+        return f;
+    }
+    f->n = 0;
+    for (int i = 0; i < 2; i++) {
+        struct list_item *cur;
+        if (lists[i] < 0) {
+            continue;
+        }
+        for (cur = uc->hook[lists[i]].head; cur != NULL; cur = cur->next) {
+            struct hook *hook = (struct hook *)cur->data;
+            if (hook->to_delete) {
+                continue;
+            }
+            if (f->n == f->capacity) {
+                f->capacity = f->capacity ? f->capacity * 2 : 64;
+                f->h = g_realloc(f->h, f->capacity * sizeof(*f->h));
+            }
+            f->h[f->n].begin = hook->begin;
+            f->h[f->n].end = hook->end;
+            f->h[f->n].watched = hook->embedder_watched;
+            f->n++;
+        }
+    }
+    f->gen = uc->embedder_hook_gen;
+    return f;
+}
+
+/* embedder: embedder_hook_overlaps over the flattened hooks of `which`. */
+static bool embedder_flat_overlaps(struct uc_struct *uc, int which,
+                                   hwaddr first, hwaddr last)
+{
+    struct embedder_flat_hooks *f = embedder_flat_hooks(uc, which);
+    size_t i;
+    for (i = 0; i < f->n; i++) {
+        const struct embedder_flat_hook *h = &f->h[i];
+        if ((h->begin > h->end || (h->begin <= last && h->end >= first)) &&
+            (!h->watched || embedder_watched(uc, first, last)))
             return true;
     }
     return false;
@@ -939,10 +977,9 @@ static int embedder_page_hook_flags(struct uc_struct *uc, hwaddr page)
                e->page == page)) {
         return e->flags;
     }
-    if (embedder_hook_overlaps(uc, uc->hook[UC_HOOK_MEM_READ_IDX].head, page, last) ||
-        embedder_hook_overlaps(uc, uc->hook[UC_HOOK_MEM_READ_AFTER_IDX].head, page, last))
+    if (embedder_flat_overlaps(uc, 0, page, last))
         flags |= BP_MEM_READ;
-    if (embedder_hook_overlaps(uc, uc->hook[UC_HOOK_MEM_WRITE_IDX].head, page, last))
+    if (embedder_flat_overlaps(uc, 1, page, last))
         flags |= BP_MEM_WRITE;
     e->page = page;
     e->gen = uc->embedder_hook_gen;

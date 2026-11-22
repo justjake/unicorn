@@ -512,6 +512,7 @@ struct uc_struct {
     uint32_t embedder_retry_limit; // block hook: retranslate this block this short
     bool embedder_restart_request; // write hook: restart the storing instruction
     void (*embedder_code_stale_restart)(struct uc_struct *uc);
+    bool embedder_keep_code_caches; // a flush that leaves the guest mapping alone keeps jump caches
     bool embedder_code_stale; // a store rewrote the rest of the running block; the next instruction hook restarts there
     bool embedder_tb_thumb;        // Thumb state of the block being translated
     bool embedder_tb_slow;         // the filter asked for the block hook on every entry
@@ -564,6 +565,17 @@ struct uc_struct {
         uint64_t gen;
         int flags;
     } embedder_flags_pages[UC_EMBEDDER_PAGE_CACHE];
+    /* The live data-access hooks flattened per list (0 read and read-after, 1
+       write), rebuilt when embedder_hook_gen changes: a page-flag miss scans
+       these instead of walking the hook lists. */
+    struct embedder_flat_hooks {
+        uint64_t gen;
+        size_t n, capacity;
+        struct embedder_flat_hook {
+            uint64_t begin, end;
+            bool watched;
+        } *h;
+    } embedder_flat[2];
 };
 
 // Metadata stub for the variable-size cpu context used with uc_context_*()

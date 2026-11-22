@@ -380,6 +380,54 @@ static int cpu_restore_state_from_tb(CPUState *cpu, TranslationBlock *tb,
     return 0;
 }
 
+/* embedder: the translation and instruction data of the instruction whose host
+   code contains retaddr, remembered per site (a hot device access repeats the
+   same one). NULL for a one-shot translation or an address without one. Valid
+   until the translation leaves the tree or the code buffer resets. */
+static struct embedder_site *embedder_site(struct uc_struct *uc, uintptr_t retaddr)
+{
+    TCGContext *tcg_ctx = uc->tcg_ctx;
+    struct embedder_site *site =
+        &tcg_ctx->embedder_sites[((retaddr >> 2) ^ (retaddr >> 11)) & 511];
+    TranslationBlock *tb;
+    target_ulong data[TARGET_INSN_START_WORDS];
+    uintptr_t host_pc, searched;
+    uint8_t *p;
+    int i, j;
+
+    if (likely(site->ra == retaddr)) {
+        return site;
+    }
+    tb = tcg_tb_lookup(tcg_ctx, retaddr);
+    if (!tb || (tb_cflags(tb) & CF_NOCACHE)) {
+        return NULL;
+    }
+    data[0] = tb->pc;
+    for (j = 1; j < TARGET_INSN_START_WORDS; j++) {
+        data[j] = 0;
+    }
+    host_pc = (uintptr_t)tb->tc.ptr;
+    searched = retaddr - GETPC_ADJ;
+    p = (uint8_t *)tb->tc.ptr + tb->tc.size;
+    if (searched < host_pc) {
+        return NULL;
+    }
+    for (i = 0; i < tb->icount; ++i) {
+        for (j = 0; j < TARGET_INSN_START_WORDS; ++j) {
+            data[j] += decode_sleb128(&p);
+        }
+        host_pc += decode_sleb128(&p);
+        if (host_pc > searched) {
+            site->ra = retaddr;
+            site->tb = tb;
+            site->index = i;
+            memcpy(site->data, data, sizeof(data));
+            return site;
+        }
+    }
+    return NULL;
+}
+
 bool cpu_restore_state(CPUState *cpu, uintptr_t host_pc, bool will_exit)
 {
     TCGContext *tcg_ctx = cpu->uc->tcg_ctx;
@@ -405,6 +453,13 @@ bool cpu_restore_state(CPUState *cpu, uintptr_t host_pc, bool will_exit)
 
     if (check_offset < uc->tcg_ctx->code_gen_buffer_size) {
         uc->embedder_exit_counters[UC_COUNT_TB_RESTORE_LOOKUPS]++;
+        if (!will_exit) {
+            struct embedder_site *site = embedder_site(uc, host_pc);
+            if (site) {
+                restore_state_to_opc(cpu->env_ptr, site->tb, site->data);
+                return true;
+            }
+        }
         tb = tcg_tb_lookup(tcg_ctx, host_pc);
         if (tb) {
             cpu_restore_state_from_tb(cpu, tb, host_pc, will_exit);
@@ -2279,11 +2334,19 @@ void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember)
         return;
     }
     uc->embedder_exit_counters[UC_COUNT_TB_RESTART_LOOKUPS]++;
-    tb = tcg_tb_lookup(tcg_ctx, retaddr);
-    if (!tb) {
-        return;
+    {
+        struct embedder_site *site = embedder_site(uc, retaddr);
+        if (site) {
+            tb = site->tb;
+            index = site->index;
+        } else {
+            tb = tcg_tb_lookup(tcg_ctx, retaddr);
+            if (!tb) {
+                return;
+            }
+            index = embedder_insn_index(tb, retaddr);
+        }
     }
-    index = embedder_insn_index(tb, retaddr);
     if (index < 0 || index == tb->icount - 1) {
         return;
     }

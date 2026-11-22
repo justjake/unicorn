@@ -701,6 +701,13 @@ struct TCGContext {
     GTree *tree;
     /* The translation the last tcg_tb_lookup found; NULL once it leaves the tree. */
     TranslationBlock *tb_lookup_last;
+    /* embedder: instruction sites of translated code (see embedder_site). */
+    struct embedder_site {
+        uintptr_t ra;           /* host return address; 0 when empty */
+        TranslationBlock *tb;
+        int index;              /* instruction of its block */
+        target_ulong data[TARGET_INSN_START_WORDS];
+    } embedder_sites[512];
     TCGRegSet tcg_target_available_regs[TCG_TYPE_COUNT];
     TCGRegSet tcg_target_call_clobber_regs;
     int *indirect_reg_alloc_order;
