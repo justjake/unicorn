@@ -3472,11 +3472,21 @@ uc_err uc_embedder_request_restart(uc_engine *uc)
 // 2048: memory read and write hooks that return into their block leave
 //       ITSTATE as translated code expects it (cputlb.c, EMBEDDER_HOOKS_RETURN).
 // 4096: uc_embedder_store_watched.
+// 1 << 20: opted-in Thumb blocks debit the coarse budget only on the enabled
+//          embedder-designated 4 KiB page and when classified safe by the filter.
+// 1 << 21: Thumb recovery accounting appends the last admitted fast block span.
+// 1 << 22: appended counters report learned and terminal-request mode-4 stores.
+// 1 << 23: appended counters attribute translated block-guard refusals.
+// 1 << 24: uc_embedder_add_restart_boundary installs a native no-op memory hook.
+// 1 << 25: Thumb filter decision bit 8 executes the instruction and ends its TB.
+// 1 << 26: Thumb filter decision bit 16 proves an instruction safe in ITSTATE.
+// 1 << 27: opt-in translation timing classifies first, repeated lookup keys.
 UNICORN_EXPORT
 uint32_t uc_embedder_features(void)
 {
     return 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 |
-           4096;
+           4096 | 1u << 20 | 1u << 21 | 1u << 22 | 1u << 23 | 1u << 24 |
+           1u << 25 | 1u << 26 | 1u << 27;
 }
 
 UNICORN_EXPORT
