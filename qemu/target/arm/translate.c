@@ -11642,6 +11642,11 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
                                                 dc->base.pc_next - insn_size,
                                                 insn);
         if (decision & 4) {
+            if (uc->embedder_guard_diagnostics &&
+                !uc->embedder_tb_slow_reason) {
+                uc->embedder_tb_slow_pc = dc->base.pc_next - insn_size;
+                uc->embedder_tb_slow_word = insn;
+            }
             UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_CLASSIFIER);
         }
     }

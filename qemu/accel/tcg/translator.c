@@ -43,6 +43,8 @@ void translator_loop_temp_check(DisasContextBase *db)
 struct EmbedderBlockGuard {
     TCGOp *fast;
     TCGOp *slow_reason;
+    TCGOp *classifier_sample_pc;
+    TCGOp *classifier_sample_word;
     TCGOp *count_low;
     TCGOp *count_high;
     TCGOp *size;
@@ -70,6 +72,74 @@ static void gen_embedder_guard_counter(TCGContext *tcg_ctx,
                        counter * sizeof(uint64_t));
     tcg_temp_free_i64(tcg_ctx, value);
     tcg_temp_free_ptr(tcg_ctx, ucp);
+}
+
+static void gen_embedder_classifier_sample(TCGContext *tcg_ctx,
+                                           struct uc_struct *uc,
+                                           struct EmbedderBlockGuard *guard)
+{
+    // Power-of-two refusal counts spread bounded samples from startup into a
+    // long run without random state or per-callback work outside this slow path.
+    TCGLabel *skip = gen_new_label(tcg_ctx);
+    TCGv_i64 refusal_count = tcg_temp_local_new_i64(tcg_ctx);
+    TCGv_ptr ucp = tcg_const_ptr(tcg_ctx, uc);
+    tcg_gen_ld_i64(tcg_ctx, refusal_count, ucp,
+                   offsetof(struct uc_struct, embedder_exit_counters) +
+                       UC_COUNT_GUARD_CLASSIFIER_SLOW * sizeof(uint64_t));
+    tcg_temp_free_ptr(tcg_ctx, ucp);
+    TCGv_i64 prior = tcg_temp_new_i64(tcg_ctx);
+    tcg_gen_subi_i64(tcg_ctx, prior, refusal_count, 1);
+    TCGv_i64 power_test = tcg_temp_new_i64(tcg_ctx);
+    tcg_gen_and_i64(tcg_ctx, power_test, refusal_count, prior);
+    tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, power_test, 0, skip);
+
+    TCGv_ptr sample_ucp = tcg_const_ptr(tcg_ctx, uc);
+    TCGv_i64 sample_count = tcg_temp_new_i64(tcg_ctx);
+    tcg_gen_ld_i64(tcg_ctx, sample_count, sample_ucp,
+                   offsetof(struct uc_struct, embedder_exit_counters) +
+                       UC_COUNT_GUARD_SAMPLE_COUNT * sizeof(uint64_t));
+    TCGv_i64 slot = tcg_temp_new_i64(tcg_ctx);
+    tcg_gen_andi_i64(tcg_ctx, slot, sample_count,
+                     UC_EMBEDDER_GUARD_SAMPLE_MASK);
+    TCGv_i64 index = tcg_temp_new_i64(tcg_ctx);
+    tcg_gen_shli_i64(tcg_ctx, index, slot, 1);
+    tcg_gen_add_i64(tcg_ctx, index, index, slot);
+    tcg_gen_addi_i64(tcg_ctx, index, index, UC_COUNT_GUARD_SAMPLE_RING);
+    tcg_gen_shli_i64(tcg_ctx, index, index, 3);
+    TCGv_ptr offset = tcg_temp_new_ptr(tcg_ctx);
+    tcg_gen_trunc_i64_ptr(tcg_ctx, offset, index);
+    TCGv_ptr samples = tcg_temp_new_ptr(tcg_ctx);
+    TCGv_ptr base = tcg_const_ptr(tcg_ctx, uc);
+    tcg_gen_addi_ptr(tcg_ctx, base, base,
+                     offsetof(struct uc_struct, embedder_exit_counters));
+    tcg_gen_add_ptr(tcg_ctx, samples, base, offset);
+    tcg_gen_st_i64(tcg_ctx, refusal_count, samples, 0);
+
+    TCGv_i64 sample_pc = tcg_const_i64(tcg_ctx, 0);
+    guard->classifier_sample_pc = tcg_last_op(tcg_ctx);
+    tcg_gen_st_i64(tcg_ctx, sample_pc, samples, sizeof(uint64_t));
+    TCGv_i64 sample_word = tcg_const_i64(tcg_ctx, 0);
+    guard->classifier_sample_word = tcg_last_op(tcg_ctx);
+    tcg_gen_st_i64(tcg_ctx, sample_word, samples, 2 * sizeof(uint64_t));
+    tcg_temp_free_i64(tcg_ctx, sample_pc);
+    tcg_temp_free_i64(tcg_ctx, sample_word);
+
+    tcg_gen_addi_i64(tcg_ctx, sample_count, sample_count, 1);
+    tcg_gen_st_i64(tcg_ctx, sample_count, sample_ucp,
+                   offsetof(struct uc_struct, embedder_exit_counters) +
+                       UC_COUNT_GUARD_SAMPLE_COUNT * sizeof(uint64_t));
+
+    gen_set_label(tcg_ctx, skip);
+    tcg_temp_free_i64(tcg_ctx, refusal_count);
+    tcg_temp_free_i64(tcg_ctx, prior);
+    tcg_temp_free_i64(tcg_ctx, power_test);
+    tcg_temp_free_i64(tcg_ctx, sample_count);
+    tcg_temp_free_i64(tcg_ctx, slot);
+    tcg_temp_free_i64(tcg_ctx, index);
+    tcg_temp_free_ptr(tcg_ctx, offset);
+    tcg_temp_free_ptr(tcg_ctx, samples);
+    tcg_temp_free_ptr(tcg_ctx, base);
+    tcg_temp_free_ptr(tcg_ctx, sample_ucp);
 }
 
 static void gen_embedder_block_guard(TCGContext *tcg_ctx,
@@ -233,6 +303,7 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
 
         gen_set_label(tcg_ctx, classifier_slow);
         gen_embedder_guard_counter(tcg_ctx, uc, UC_COUNT_GUARD_CLASSIFIER_SLOW);
+        gen_embedder_classifier_sample(tcg_ctx, uc, guard);
         tcg_gen_br(tcg_ctx, helper);
         gen_set_label(tcg_ctx, page_span);
         gen_embedder_guard_counter(tcg_ctx, uc, UC_COUNT_GUARD_THUMB_PAGE_SPAN);
@@ -418,6 +489,8 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
 
     uc->embedder_tb_slow = false;
     uc->embedder_tb_slow_reason = 0;
+    uc->embedder_tb_slow_pc = 0;
+    uc->embedder_tb_slow_word = 0;
 
     /* Start translating.  */
     if (chain_body && (uc->embedder_block_exits ||
@@ -601,6 +674,12 @@ _end_loop:
                     reason = 3; // translated bytes cross the enabled 4 KiB page
                 }
                 tcg_set_insn_param(embedder_guard.slow_reason, 1, reason);
+                if (reason == UC_EMBEDDER_TB_SLOW_CLASSIFIER) {
+                    tcg_set_insn_param(embedder_guard.classifier_sample_pc, 1,
+                                       uc->embedder_tb_slow_pc);
+                    tcg_set_insn_param(embedder_guard.classifier_sample_word, 1,
+                                       uc->embedder_tb_slow_word);
+                }
             }
             tcg_set_insn_param(embedder_guard.count_low, 1,
                                (uint32_t)db->tb->icount);

@@ -270,6 +270,9 @@ static inline bool _hook_exists_bounded(struct list_item *cur, uint64_t addr)
 typedef struct TargetPageBits TargetPageBits;
 typedef struct TCGContext TCGContext;
 
+#define UC_EMBEDDER_GUARD_SAMPLE_CAP 32
+#define UC_EMBEDDER_GUARD_SAMPLE_MASK (UC_EMBEDDER_GUARD_SAMPLE_CAP - 1)
+
 // Host diagnostics ABI, shared with camera_native Machine.exit_counters.
 enum uc_embedder_exit_counter {
     UC_EXIT_DIRECT, UC_EXIT_RESTORE, UC_EXIT_NOEXC, UC_EXIT_ATOMIC,
@@ -297,7 +300,11 @@ enum uc_embedder_exit_counter {
     UC_COUNT_GUARD_THUMB_PAGE_SPAN, UC_COUNT_GUARD_DISARMED,
     UC_COUNT_GUARD_PAGE_MISMATCH, UC_COUNT_GUARD_BUDGET,
     UC_COUNT_GUARD_PAUSE,
-    UC_EXIT_COUNTER_COUNT
+    UC_COUNT_GUARD_SAMPLE_COUNT,
+    UC_COUNT_GUARD_SAMPLE_RING,
+    UC_COUNT_GUARD_SAMPLE_RING_END = UC_COUNT_GUARD_SAMPLE_RING +
+                                     UC_EMBEDDER_GUARD_SAMPLE_CAP * 3,
+    UC_EXIT_COUNTER_COUNT = UC_COUNT_GUARD_SAMPLE_RING_END
 };
 
 /* Embedder-owned page flags, one conservative bit per observed host page.
@@ -579,6 +586,8 @@ struct uc_struct {
     // Why a translated block was made slow: classifier refusal or another
     // observer/translation constraint. Zero means no slow-path reason.
     uint8_t embedder_tb_slow_reason;
+    uint64_t embedder_tb_slow_pc;
+    uint32_t embedder_tb_slow_word;
     // embedder: budgeted block accounting (uc_embedder_accounting). A block
     // translated as fast (A32 block hook size bit 30, or Thumb mode 3/4) runs
     // without calling hooks:
