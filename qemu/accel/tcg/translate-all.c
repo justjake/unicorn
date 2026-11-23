@@ -1528,6 +1528,7 @@ static void do_tb_flush(CPUState *cpu, run_on_cpu_data tb_flush_count)
     tcg_region_reset_all(cpu->uc->tcg_ctx);
     uc_embedder_chain_flush(cpu->uc);
     cpu->uc->embedder_exit_counters[UC_COUNT_TRANSLATION_FLUSHES]++;
+    uc_translation_timing_global_flush(cpu->uc);
     /* XXX: flush processor icache at this point if cache flush is
        expensive */
     cpu->uc->tcg_ctx->tb_ctx.tb_flush_count = cpu->uc->tcg_ctx->tb_ctx.tb_flush_count + 1;
@@ -1632,6 +1633,9 @@ static inline void tb_jmp_unlink(TranslationBlock *dest)
     dest->jmp_list_head = (uintptr_t)NULL;
 }
 
+static void uc_embedder_translation_timing_key(TranslationBlock *tb,
+                                               UcTranslationTimingKey *key);
+
 /*
  * In user-mode, call with mmap_lock held.
  * In !user-mode, if @rm_from_page_list is set, call with the TB's pages'
@@ -1643,11 +1647,17 @@ static void do_tb_phys_invalidate(TCGContext *tcg_ctx, TranslationBlock *tb,
 {
     CPUState *cpu = tcg_ctx->uc->cpu;
     struct uc_struct *uc = tcg_ctx->uc;
+    UcTranslationTimingKey timing_key;
+    bool timing_key_valid = uc->embedder_guard_diagnostics &&
+                            uc->embedder_translation_timing != NULL;
     PageDesc *p;
     uint32_t h;
     tb_page_addr_t phys_pc;
     bool code_gen_locked;
 
+    if (timing_key_valid) {
+        uc_embedder_translation_timing_key(tb, &timing_key);
+    }
     uc->embedder_exit_counters[UC_COUNT_TRANSLATION_INVALIDATIONS]++;
     uc->embedder_exit_counters[cause]++;
     /* Cached indirect targets may name this translation. */
@@ -1670,6 +1680,9 @@ static void do_tb_phys_invalidate(TCGContext *tcg_ctx, TranslationBlock *tb,
         !qht_remove(&tcg_ctx->tb_ctx.htable, tb, h)) {
         tb_exec_change(uc, code_gen_locked);
         return;
+    }
+    if (timing_key_valid) {
+        uc_translation_timing_note_invalidation(uc, &timing_key, cause);
     }
 
     /* remove the TB from the page list */
@@ -1854,6 +1867,22 @@ tb_link_page(struct uc_struct *uc, TranslationBlock *tb, tb_page_addr_t phys_pc,
     return tb;
 }
 
+static void uc_embedder_translation_timing_key(TranslationBlock *tb,
+                                               UcTranslationTimingKey *key)
+{
+    key->pc = (uint64_t)tb->pc;
+    key->physical_page1 = tb->page_addr[0] == (tb_page_addr_t)-1
+                              ? UINT64_MAX
+                              : (uint64_t)tb->page_addr[0];
+    key->physical_page2 = tb->page_addr[1] == (tb_page_addr_t)-1
+                              ? UINT64_MAX
+                              : (uint64_t)tb->page_addr[1];
+    key->cs_base = (uint64_t)tb->cs_base;
+    key->flags = tb->flags;
+    key->cflags = tb_cflags(tb) & (CF_HASH_MASK | CF_INVALID);
+    key->trace_vcpu_dstate = tb->trace_vcpu_dstate;
+}
+
 /* Called with mmap_lock held for user mode emulation.  */
 static void uc_embedder_translation_timing_complete(
     CPUState *cpu, bool enabled, int64_t start_ns, TranslationBlock *tb)
@@ -1870,17 +1899,7 @@ static void uc_embedder_translation_timing_complete(
     // excluded from the recorded tb_gen_code elapsed time.
     end_ns = qemu_clock_get_ns(QEMU_CLOCK_HOST);
     elapsed_ns = end_ns >= start_ns ? (uint64_t)(end_ns - start_ns) : 0;
-    key.pc = (uint64_t)tb->pc;
-    key.physical_page1 = tb->page_addr[0] == (tb_page_addr_t)-1
-                             ? UINT64_MAX
-                             : (uint64_t)tb->page_addr[0];
-    key.physical_page2 = tb->page_addr[1] == (tb_page_addr_t)-1
-                             ? UINT64_MAX
-                             : (uint64_t)tb->page_addr[1];
-    key.cs_base = (uint64_t)tb->cs_base;
-    key.flags = tb->flags;
-    key.cflags = tb_cflags(tb) & (CF_HASH_MASK | CF_INVALID);
-    key.trace_vcpu_dstate = tb->trace_vcpu_dstate;
+    uc_embedder_translation_timing_key(tb, &key);
     uc_translation_timing_record(cpu->uc, &key, elapsed_ns);
 }
 
