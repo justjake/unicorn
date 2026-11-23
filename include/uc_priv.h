@@ -148,6 +148,8 @@ typedef void (*uc_tcg_flush_tlb)(struct uc_struct *uc);
 // Invalidate the TB at given address
 typedef void (*uc_invalidate_tb_t)(struct uc_struct *uc, uint64_t start,
                                    size_t len);
+typedef void (*uc_invalidate_ram_range_t)(struct uc_struct *uc,
+                                          ram_addr_t start, ram_addr_t end);
 
 // Request generating TB at given address
 typedef uc_err (*uc_gen_tb_t)(struct uc_struct *uc, uint64_t pc, uc_tb *out_tb);
@@ -429,6 +431,7 @@ struct uc_struct {
     uc_tcg_flush_tlb tcg_flush_tlb;
     void (*tcg_flush_physical_tlb)(struct uc_struct *, uint64_t, uint64_t);
     uc_invalidate_tb_t uc_invalidate_tb;
+    uc_invalidate_ram_range_t uc_invalidate_ram_range;
     uc_gen_tb_t uc_gen_tb;
     uc_tb_flush_t tb_flush;
     uc_add_inline_hook_t add_inline_hook;

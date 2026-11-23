@@ -34,6 +34,7 @@
 _Thread_local unsigned int uc_jit_toggle_count;
 #endif
 #include "qemu/include/qemu/queue.h"
+#include "qemu/include/exec/ramlist.h"
 #include "qemu-common.h"
 #include "qemu/accel/tcg/translation-timing.h"
 
@@ -3455,6 +3456,85 @@ uc_err uc_embedder_request_restart(uc_engine *uc)
     uc->embedder_exit_counters[UC_EXIT_RESTART_REQUEST]++;
     uc->embedder_restart_request = true;
     return UC_ERR_OK;
+}
+
+/* Invalidate every RAMBlock view that shares bytes with a host backing write.
+ * This runs on the serialized engine thread and leaves any active-block
+ * boundary or restart request to the caller. */
+UNICORN_EXPORT
+uc_err uc_embedder_invalidate_backing(uc_engine *uc, const void *host,
+                                      size_t size)
+{
+    uc_err err = UC_ERR_OK;
+    uintptr_t host_begin, host_end;
+    RAMBlock *block;
+
+    if (!uc) {
+        return UC_ERR_ARG;
+    }
+    UC_INIT(uc);
+
+    if (size == 0) {
+        goto done;
+    }
+    if (!host) {
+        err = UC_ERR_ARG;
+        goto done;
+    }
+    host_begin = (uintptr_t)host;
+    if (size > UINTPTR_MAX - host_begin) {
+        err = UC_ERR_ARG;
+        goto done;
+    }
+    host_end = host_begin + size;
+    if (!uc->uc_invalidate_ram_range) {
+        err = UC_ERR_RESOURCE;
+        goto done;
+    }
+
+    RAMBLOCK_FOREACH(block) {
+        uintptr_t block_begin, block_offset, overlap_begin;
+        uintptr_t block_remaining, host_remaining, overlap_size;
+        ram_addr_t ram_begin, ram_end;
+
+        if (!block->host || block->used_length == 0) {
+            continue;
+        }
+        block_begin = (uintptr_t)block->host;
+        if (host_begin >= block_begin) {
+            block_offset = host_begin - block_begin;
+            if (block_offset >= block->used_length) {
+                continue;
+            }
+            overlap_begin = host_begin;
+        } else {
+            if (block_begin >= host_end) {
+                continue;
+            }
+            block_offset = 0;
+            overlap_begin = block_begin;
+        }
+
+        if (block->used_length > UINTPTR_MAX - block_begin ||
+            block_offset > UINTPTR_MAX - block->offset) {
+            err = UC_ERR_ARG;
+            goto done;
+        }
+        block_remaining = block->used_length - block_offset;
+        host_remaining = host_end - overlap_begin;
+        overlap_size = MIN(block_remaining, host_remaining);
+        ram_begin = block->offset + block_offset;
+        if (overlap_size > UINTPTR_MAX - ram_begin) {
+            err = UC_ERR_ARG;
+            goto done;
+        }
+        ram_end = ram_begin + overlap_size;
+        uc->uc_invalidate_ram_range(uc, ram_begin, ram_end);
+    }
+
+done:
+    restore_jit_state(uc);
+    return err;
 }
 
 // embedder: feature bits of these exports. 1: with a translation filter installed,

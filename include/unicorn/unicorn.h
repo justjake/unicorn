@@ -1491,6 +1491,16 @@ uc_err uc_embedder_tlbi_status(uc_engine *uc, uint32_t abi,
 UNICORN_EXPORT
 uc_err uc_embedder_tlbi_ack(uc_engine *uc, uint32_t abi, uint64_t owner,
                            uint64_t sequence);
+/* Invalidate translated code backed by every RAMBlock that intersects a host
+ * memory range. Call on the engine's serialized owner thread; do not call
+ * concurrently with execution from another thread. This removes cached
+ * translations but does not stop or restart an active TB. Callers that write
+ * backing memory from an execution callback must arrange their usual block
+ * boundary or restart handling before stale code can run. A zero size is a
+ * no-op. */
+UNICORN_EXPORT
+uc_err uc_embedder_invalidate_backing(uc_engine *uc, const void *host,
+                                      size_t size);
 UNICORN_EXPORT
 uc_err uc_embedder_set_guard_diagnostics(uc_engine *uc, bool enabled);
 UNICORN_EXPORT
