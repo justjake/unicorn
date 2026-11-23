@@ -402,7 +402,8 @@ TranslationBlock *tb_htable_lookup(CPUState *cpu, target_ulong pc,
 void tb_set_jmp_target(TranslationBlock *tb, int n, uintptr_t addr);
 void tb_exec_lock(struct uc_struct*);
 void tb_exec_unlock(struct uc_struct*);
-void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember);
+void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember,
+                           bool remember_watched_store);
 
 /* GETPC is the true target of the return instruction that we'll execute.  */
 #ifdef CONFIG_TCG_INTERPRETER

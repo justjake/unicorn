@@ -11374,6 +11374,15 @@ static void arm_tr_tb_start(DisasContextBase *dcbase, CPUState *cpu)
     DisasContext *dc = container_of(dcbase, DisasContext, base);
     TCGContext *tcg_ctx = dc->uc->tcg_ctx;
 
+    // ITSTATE affects instruction conditions and is published per instruction
+    // by code hooks. Mode 4 may admit a block only when each IT instruction and
+    // every member carries the explicit pure-IT-safe filter bit; all other
+    // modes retain helper accounting for active ITSTATE.
+    if (dc->thumb && (dc->condexec_mask || dc->condexec_cond) &&
+        dc->uc->embedder_acct.enabled != 4) {
+        UC_EMBEDDER_MARK_TB_SLOW(dc->uc, UC_EMBEDDER_TB_SLOW_OTHER);
+    }
+
     /* A note on handling of the condexec (IT) bits:
      *
      * We want to avoid the overhead of having to write the updated condexec
@@ -11588,14 +11597,26 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     CPUARMState *env = cpu->env_ptr;
     uint32_t insn;
     bool is_16bit;
+    bool active_it;
     uint32_t insn_size;
+    int embedder_decision = 1;
 
     if (arm_pre_translate_insn(dc)) {
+        if (uc->embedder_acct.enabled == 3 || uc->embedder_acct.enabled == 4) {
+            // The pre-translation check can terminate before decoding an
+            // instruction, so tb->icount may include a synthetic entry.
+            UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_OTHER);
+        }
         return;
     }
 
     // Unicorn: end address tells us to stop emulation
     if (uc_addr_is_exit(uc, dcbase->pc_next)) {
+        if (uc->embedder_acct.enabled == 3 || uc->embedder_acct.enabled == 4) {
+            // translator_loop counts this synthetic run-until terminator in
+            // tb->icount; the block must use the helper instead of pre-debit.
+            UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_OTHER);
+        }
         // imitate WFI instruction to halt emulation
         dcbase->is_jmp = DISAS_WFI;
         return;
@@ -11612,6 +11633,33 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         dc->base.pc_next += 2;
     }
     dc->insn = insn;
+    insn_size = is_16bit ? 2 : 4;
+    active_it = dc->condexec_mask || dc->condexec_cond;
+
+    if ((uc->embedder_acct.enabled == 3 || uc->embedder_acct.enabled == 4) &&
+        uc->embedder_insn_filter) {
+        // This opt-in classification only decides whether translated block
+        // accounting must retain its helper. It never changes Thumb hook or
+        // instruction translation behavior.
+        embedder_decision = uc->embedder_insn_filter(uc->embedder_filter_user,
+                                                     dc->base.pc_next - insn_size,
+                                                     insn);
+        if (embedder_decision & 4) {
+            if (uc->embedder_guard_diagnostics &&
+                !uc->embedder_tb_slow_reason) {
+                uc->embedder_tb_slow_pc = dc->base.pc_next - insn_size;
+                uc->embedder_tb_slow_word = insn;
+            }
+            UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_CLASSIFIER);
+        }
+    }
+    if (active_it &&
+        (uc->embedder_acct.enabled != 4 || !(embedder_decision & 16))) {
+        // The translation filter receives the instruction word but not the
+        // incoming ITSTATE. Mode 4 relies on its separate explicit bit for
+        // instructions proven safe while conditionally executed.
+        UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_OTHER);
+    }
 
     // Memory hooks retain the atomic IT-block behavior. Code hooks below
     // publish PC and ITSTATE before testing the condition, so they can stop
@@ -11619,8 +11667,12 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     uc->no_exit_request = (dc->condexec_mask != 0);
 
     // Unicorn: trace this instruction on request
-    insn_size = is_16bit ? 2 : 4;
     if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_CODE, dc->base.pc_next - insn_size)) {
+        if (uc->embedder_acct.enabled == 3 || uc->embedder_acct.enabled == 4) {
+            // A code hook may stop before this instruction retires, so the
+            // translated instruction count cannot be debited as a whole.
+            UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_OTHER);
+        }
         
         // Publish the current architectural state before the callback.
         gen_set_pc_im(dc, dc->base.pc_next - insn_size);
@@ -11648,6 +11700,12 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         disas_thumb2_insn(dc, insn);
     }
 
+    if ((dc->condexec_mask || dc->condexec_cond) &&
+        (uc->embedder_acct.enabled != 4 || !(embedder_decision & 16))) {
+        // Includes an IT instruction, which establishes state in the decoder.
+        UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_OTHER);
+    }
+
     /* Advance the Thumb condexec condition.  */
     if (dc->condexec_mask) {
         dc->condexec_cond = ((dc->condexec_cond & 0xe) |
@@ -11659,6 +11717,17 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     }
 
     arm_post_translate_insn(dc);
+
+    if (embedder_decision & 8) {
+        if (uc->embedder_acct.enabled != 4) {
+            // Execute-and-end is only an inline-safe contract for mode 4.
+            // Other modes retain helper accounting and observed execution.
+            UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_OTHER);
+        }
+        if (dc->base.is_jmp == DISAS_NEXT) {
+            dc->base.is_jmp = DISAS_TOO_MANY;
+        }
+    }
 
     /* Thumb is a variable-length ISA.  Stop translation when the next insn
      * will touch a new page.  This ensures that prefetch aborts occur at

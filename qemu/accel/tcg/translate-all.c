@@ -35,6 +35,7 @@
 #include "sysemu/cpus.h"
 #include "sysemu/tcg.h"
 #include "uc_priv.h"
+#include "translation-timing.h"
 
 static void embedder_code_stale_restart(struct uc_struct *uc);
 
@@ -1854,6 +1855,35 @@ tb_link_page(struct uc_struct *uc, TranslationBlock *tb, tb_page_addr_t phys_pc,
 }
 
 /* Called with mmap_lock held for user mode emulation.  */
+static void uc_embedder_translation_timing_complete(
+    CPUState *cpu, bool enabled, int64_t start_ns, TranslationBlock *tb)
+{
+    UcTranslationTimingKey key;
+    int64_t end_ns;
+    uint64_t elapsed_ns;
+
+    if (!enabled) {
+        return;
+    }
+
+    // Stop before constructing or hashing the key, so diagnostic tracking is
+    // excluded from the recorded tb_gen_code elapsed time.
+    end_ns = qemu_clock_get_ns(QEMU_CLOCK_HOST);
+    elapsed_ns = end_ns >= start_ns ? (uint64_t)(end_ns - start_ns) : 0;
+    key.pc = (uint64_t)tb->pc;
+    key.physical_page1 = tb->page_addr[0] == (tb_page_addr_t)-1
+                             ? UINT64_MAX
+                             : (uint64_t)tb->page_addr[0];
+    key.physical_page2 = tb->page_addr[1] == (tb_page_addr_t)-1
+                             ? UINT64_MAX
+                             : (uint64_t)tb->page_addr[1];
+    key.cs_base = (uint64_t)tb->cs_base;
+    key.flags = tb->flags;
+    key.cflags = tb_cflags(tb) & (CF_HASH_MASK | CF_INVALID);
+    key.trace_vcpu_dstate = tb->trace_vcpu_dstate;
+    uc_translation_timing_record(cpu->uc, &key, elapsed_ns);
+}
+
 TranslationBlock *tb_gen_code(CPUState *cpu,
                               target_ulong pc, target_ulong cs_base,
                               uint32_t flags, int cflags)
@@ -1868,6 +1898,11 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     target_ulong virt_page2;
     tcg_insn_unit *gen_code_buf;
     int gen_code_size, search_size, max_insns;
+    bool translation_timing_enabled =
+        cpu->uc->embedder_guard_diagnostics &&
+        cpu->uc->embedder_translation_timing != NULL;
+    int64_t translation_start_ns =
+        translation_timing_enabled ? qemu_clock_get_ns(QEMU_CLOCK_HOST) : 0;
 
     assert_memory_lock();
 #ifdef HAVE_PTHREAD_JIT_PROTECT
@@ -2023,9 +2058,14 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
 
         orig_aligned -= ROUND_UP(sizeof(*tb), tcg_ctx->uc->qemu_icache_linesize);
         tcg_ctx->code_gen_ptr = (void *)orig_aligned;
+        uc_embedder_translation_timing_complete(
+            cpu, translation_timing_enabled, translation_start_ns,
+            existing_tb);
         return existing_tb;
     }
     tcg_tb_insert(tcg_ctx, tb);
+    uc_embedder_translation_timing_complete(
+        cpu, translation_timing_enabled, translation_start_ns, tb);
     uc_embedder_perf_map_record((uintptr_t)gen_code_buf, (size_t)gen_code_size,
                                 pc);
     return tb;
@@ -2323,7 +2363,8 @@ static void count_restart_tail(CPUState *cpu, TranslationBlock *tb,
    instruction executing at retaddr as a block of its own. remember: also end
    later translations at it and retranslate the block it was found in. The
    embedder's embedder_restart callback learns its PC first. */
-void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember)
+void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember,
+                           bool remember_watched_store)
 {
     struct uc_struct *uc = cpu->uc;
     TCGContext *tcg_ctx = uc->tcg_ctx;
@@ -2348,7 +2389,13 @@ void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember)
             index = embedder_insn_index(tb, retaddr);
         }
     }
-    if (index < 0 || index == tb->icount - 1) {
+    if (index < 0) {
+        return;
+    }
+    if (index == tb->icount - 1) {
+        if (remember_watched_store) {
+            uc->embedder_exit_counters[UC_COUNT_WATCHED_STORE_TERMINAL_REQUESTS]++;
+        }
         return;
     }
     count_restart_tail(cpu, tb, retaddr);
@@ -2360,6 +2407,30 @@ void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember)
         }
         g_hash_table_insert(uc->embedder_io_pcs, (gpointer)(uintptr_t)pc, (gpointer)1);
         tb_phys_invalidate(tcg_ctx, tb, -1, UC_COUNT_INVALIDATE_RESTART);
+    }
+    if (remember_watched_store && uc->embedder_acct.enabled == 4) {
+        bool learned = uc->embedder_watched_store_pcs &&
+            g_hash_table_lookup(uc->embedder_watched_store_pcs,
+                                (gconstpointer)(uintptr_t)pc);
+        if (!learned) {
+            if (uc->embedder_watched_store_pc_count >= 4096) {
+                uc->embedder_exit_counters[UC_COUNT_WATCHED_STORE_CAP]++;
+            } else {
+                if (!uc->embedder_watched_store_pcs) {
+                    uc->embedder_watched_store_pcs = g_hash_table_new(NULL, NULL);
+                }
+                g_hash_table_insert(uc->embedder_watched_store_pcs,
+                                    (gpointer)(uintptr_t)pc, (gpointer)1);
+                uc->embedder_watched_store_pc_count++;
+                uc->embedder_exit_counters[UC_COUNT_WATCHED_STORE_REMEMBERED]++;
+                learned = true;
+            }
+        }
+        if (learned) {
+            // Also retire an older overlapping TB if this PC was learned by
+            // another translation path or execution context.
+            tb_phys_invalidate(tcg_ctx, tb, -1, UC_COUNT_INVALIDATE_RESTART);
+        }
     }
     if (uc->embedder_restart) {
         uc->embedder_restart(uc->embedder_filter_user, pc);

@@ -35,6 +35,7 @@ _Thread_local unsigned int uc_jit_toggle_count;
 #endif
 #include "qemu/include/qemu/queue.h"
 #include "qemu-common.h"
+#include "qemu/accel/tcg/translation-timing.h"
 
 static void embedder_flush_tlb_flags(struct uc_struct *uc);
 
@@ -535,6 +536,9 @@ uc_err uc_close(uc_engine *uc)
     // Flush all translation buffers or we leak memory allocated by MMU
     uc->tb_flush(uc);
 
+    uc_translation_timing_free(uc->embedder_translation_timing);
+    uc->embedder_translation_timing = NULL;
+
     g_free(uc->embedder_watch);
     g_free(uc->embedder_flat[0].h);
     g_free(uc->embedder_flat[1].h);
@@ -545,6 +549,9 @@ uc_err uc_close(uc_engine *uc)
         struct uc_embedder_chain_chunk *next = uc->embedder_chain_chunks->next;
         g_free(uc->embedder_chain_chunks);
         uc->embedder_chain_chunks = next;
+    }
+    if (uc->embedder_watched_store_pcs) {
+        g_hash_table_destroy(uc->embedder_watched_store_pcs);
     }
 
     // Cleanup internally.
@@ -3465,11 +3472,21 @@ uc_err uc_embedder_request_restart(uc_engine *uc)
 // 2048: memory read and write hooks that return into their block leave
 //       ITSTATE as translated code expects it (cputlb.c, EMBEDDER_HOOKS_RETURN).
 // 4096: uc_embedder_store_watched.
+// 1 << 20: opted-in Thumb blocks debit the coarse budget only on the enabled
+//          embedder-designated 4 KiB page and when classified safe by the filter.
+// 1 << 21: Thumb recovery accounting appends the last admitted fast block span.
+// 1 << 22: appended counters report learned and terminal-request mode-4 stores.
+// 1 << 23: appended counters attribute translated block-guard refusals.
+// 1 << 24: uc_embedder_add_restart_boundary installs a native no-op memory hook.
+// 1 << 25: Thumb filter decision bit 8 executes the instruction and ends its TB.
+// 1 << 26: Thumb filter decision bit 16 proves an instruction safe in ITSTATE.
+// 1 << 27: opt-in translation timing classifies first, repeated lookup keys.
 UNICORN_EXPORT
 uint32_t uc_embedder_features(void)
 {
     return 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 |
-           4096;
+           4096 | 1u << 20 | 1u << 21 | 1u << 22 | 1u << 23 | 1u << 24 |
+           1u << 25 | 1u << 26 | 1u << 27;
 }
 
 UNICORN_EXPORT
@@ -3589,6 +3606,49 @@ uc_err uc_embedder_set_instruction_counter(uc_engine *uc, bool enabled)
 }
 
 UNICORN_EXPORT
+uc_err uc_embedder_set_guard_diagnostics(uc_engine *uc, bool enabled)
+{
+    UC_INIT(uc);
+    if (enabled && !uc->embedder_translation_timing) {
+        uc->embedder_translation_timing = uc_translation_timing_new();
+        if (!uc->embedder_translation_timing) {
+            restore_jit_state(uc);
+            return UC_ERR_NOMEM;
+        }
+    }
+    if (uc->embedder_guard_diagnostics != enabled) {
+        uc->embedder_guard_diagnostics = enabled;
+        uc->cpu->cflags_next_tb = -1;
+        uc->tb_flush(uc);
+    }
+    restore_jit_state(uc);
+    return UC_ERR_OK;
+}
+
+static void uc_embedder_restart_boundary_callback(uc_engine *uc,
+                                                  uc_mem_type type,
+                                                  uint64_t address, int size,
+                                                  int64_t value,
+                                                  void *user_data)
+{
+    (void)uc;
+    (void)type;
+    (void)address;
+    (void)size;
+    (void)value;
+    (void)user_data;
+}
+
+UNICORN_EXPORT
+uc_err uc_embedder_add_restart_boundary(uc_engine *uc, uc_hook *hook,
+                                        uint64_t begin, uint64_t end)
+{
+    return uc_hook_add(uc, hook, UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE,
+                       (void *)uc_embedder_restart_boundary_callback, NULL,
+                       begin, end);
+}
+
+UNICORN_EXPORT
 uc_err uc_embedder_reset_instruction_counter(uc_engine *uc)
 {
     UC_INIT(uc);
@@ -3607,7 +3667,9 @@ uint64_t uc_embedder_instruction_counter(uc_engine *uc)
 // embedder: the budgeted block accounting record (uc_priv.h): the embedder reads
 // and writes budget and head directly; ring/mask/enabled/pause_requested are
 // set while no emulation runs. Layout: int64 budget, u64 head, u64 *ring,
-// u64 mask, u64 enabled, u32 *pause_requested.
+// u64 mask, u64 enabled, u32 *pause_requested, then ThumbBlockAccounting:
+// u64 thumb_page, u64 last_block_start, i64 last_block_remaining_budget,
+// u32 last_block_bytes, u32 last_block_icount.
 UNICORN_EXPORT
 void *uc_embedder_accounting(uc_engine *uc)
 {

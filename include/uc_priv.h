@@ -270,6 +270,9 @@ static inline bool _hook_exists_bounded(struct list_item *cur, uint64_t addr)
 typedef struct TargetPageBits TargetPageBits;
 typedef struct TCGContext TCGContext;
 
+#define UC_EMBEDDER_GUARD_SAMPLE_CAP 32
+#define UC_EMBEDDER_GUARD_SAMPLE_MASK (UC_EMBEDDER_GUARD_SAMPLE_CAP - 1)
+
 // Host diagnostics ABI, shared with camera_native Machine.exit_counters.
 enum uc_embedder_exit_counter {
     UC_EXIT_DIRECT, UC_EXIT_RESTORE, UC_EXIT_NOEXC, UC_EXIT_ATOMIC,
@@ -288,7 +291,28 @@ enum uc_embedder_exit_counter {
     UC_COUNT_INVALIDATE_EXIT_ADDRESS, UC_COUNT_INVALIDATE_EMBEDDER,
     UC_COUNT_INVALIDATE_WATCHPOINT, UC_COUNT_INVALIDATE_RESTART,
     UC_COUNT_INVALIDATE_PHYSICAL_WRITE,
-    UC_EXIT_COUNTER_COUNT
+    // Appended diagnostic counters, gated by uc_embedder_features bit 8192.
+    UC_COUNT_WATCHED_STORE_REMEMBERED, UC_COUNT_WATCHED_STORE_TERMINAL_REQUESTS,
+    UC_COUNT_WATCHED_STORE_CAP,
+    // Guard refusal counts are callback attempts, not retired instructions.
+    // Appended and gated by uc_embedder_features bit 16384.
+    UC_COUNT_GUARD_CLASSIFIER_SLOW, UC_COUNT_GUARD_OTHER_SLOW,
+    UC_COUNT_GUARD_THUMB_PAGE_SPAN, UC_COUNT_GUARD_DISARMED,
+    UC_COUNT_GUARD_PAGE_MISMATCH, UC_COUNT_GUARD_BUDGET,
+    UC_COUNT_GUARD_PAUSE,
+    UC_COUNT_GUARD_SAMPLE_COUNT,
+    UC_COUNT_GUARD_SAMPLE_RING,
+    UC_COUNT_GUARD_SAMPLE_RING_END = UC_COUNT_GUARD_SAMPLE_RING +
+                                     UC_EMBEDDER_GUARD_SAMPLE_CAP * 3,
+    // Successful generated TBs are classified; translations minus these
+    // counts includes calls that abort before completion.
+    UC_COUNT_TRANSLATION_FIRST_LOOKUP_KEY = UC_COUNT_GUARD_SAMPLE_RING_END,
+    UC_COUNT_TRANSLATION_FIRST_LOOKUP_KEY_NS,
+    UC_COUNT_TRANSLATION_REPEATED_LOOKUP_KEY,
+    UC_COUNT_TRANSLATION_REPEATED_LOOKUP_KEY_NS,
+    UC_COUNT_TRANSLATION_UNTRACKED_LOOKUP_KEY,
+    UC_COUNT_TRANSLATION_UNTRACKED_LOOKUP_KEY_NS,
+    UC_EXIT_COUNTER_COUNT = UC_COUNT_TRANSLATION_UNTRACKED_LOOKUP_KEY_NS + 1
 };
 
 /* Embedder-owned page flags, one conservative bit per observed host page.
@@ -302,6 +326,15 @@ typedef struct uc_backing_observer {
     uint64_t *summary;
 } uc_backing_observer;
 #define UC_BACKING_OBSERVERS 32
+#define UC_EMBEDDER_TB_SLOW_CLASSIFIER 1
+#define UC_EMBEDDER_TB_SLOW_OTHER 2
+#define UC_EMBEDDER_MARK_TB_SLOW(uc, reason) do { \
+    (uc)->embedder_tb_slow = true; \
+    if ((uc)->embedder_guard_diagnostics && \
+        !(uc)->embedder_tb_slow_reason) { \
+        (uc)->embedder_tb_slow_reason = (reason); \
+    } \
+} while (0)
 
 // embedder: block chains. The record the embedder shares with translated
 // code (uc_embedder_block_chain). The embedder reads and writes it from hooks
@@ -529,6 +562,7 @@ struct uc_struct {
     // instruction, 3 for the hook in place of the instruction: the hook performs
     // it (a failed condition is its no-op), no body is translated and the block
     // ends after it. Without a covering code hook, 3 translates the body as 2.
+    // Bit 4 asks for a block hook on every entry; it disables coarse accounting.
     // While installed, an instruction touching a page an unwatched memory hook
     // covers is restarted once as the last instruction of a block, and its
     // address ends later blocks (embedder_io_pcs).
@@ -539,6 +573,8 @@ struct uc_struct {
     void *embedder_filter_user;
     int embedder_insn_decision;   // filter result for the instruction being translated
     GHashTable *embedder_io_pcs;  // guest PCs of instructions ending their block
+    GHashTable *embedder_watched_store_pcs; // learned Thumb mode-4 store boundaries
+    uint32_t embedder_watched_store_pc_count;
     uint32_t embedder_retry_limit; // block hook: retranslate this block this short
     bool embedder_restart_request; // write hook: restart the storing instruction
     void (*embedder_code_stale_restart)(struct uc_struct *uc);
@@ -554,12 +590,20 @@ struct uc_struct {
     // request or retry is pending, and omits the per-access helpers.
     bool embedder_entry_exits;
     bool embedder_instruction_counter;
+    bool embedder_guard_diagnostics;
+    // Why a translated block was made slow: classifier refusal or another
+    // observer/translation constraint. Zero means no slow-path reason.
+    uint8_t embedder_tb_slow_reason;
+    uint64_t embedder_tb_slow_pc;
+    uint32_t embedder_tb_slow_word;
     // embedder: budgeted block accounting (uc_embedder_accounting). A block
-    // translated as fast (block hook size bit 30) runs without calling hooks:
+    // translated as fast (A32 block hook size bit 30, or Thumb mode 3/4) runs
+    // without calling hooks:
     // the translator subtracts its instruction count from the budget and only
     // enters this helper when the budget runs out or a pause arrives. With
     // enabled == 1 the helper also pushes (start << 32 | count) to the ring;
-    // with enabled == 2 the ring is not written.
+    // with enabled == 2 the ring is not written. Thumb modes 3 and 4 use the
+    // enabled page in thumb_page; mode 4 also records each admitted block.
     struct {
         int64_t budget;
         uint64_t head;
@@ -567,6 +611,15 @@ struct uc_struct {
         uint64_t mask;
         uint64_t enabled;
         const uint32_t *pause_requested;
+        // Thumb coarse accounting is restricted to this enabled 4 KiB page.
+        // Appended so the existing field offsets remain stable.
+        uint64_t thumb_page;
+        // Mode 4 records each admitted Thumb block before entering guest code.
+        // last_block_bytes == 0 means no record is available.
+        uint64_t last_block_start;
+        int64_t last_block_remaining_budget;
+        uint32_t last_block_bytes;
+        uint32_t last_block_icount;
     } embedder_acct;
     // Observational host counters, never serialized in a CPU context. Entries
     // 0..6 are actual jumps by call site; 7..9 are request origins; 10..11
@@ -624,6 +677,7 @@ struct uc_struct {
     struct uc_embedder_chain_chunk *embedder_chain_chunks;
     struct uc_embedder_chain_chunk *embedder_chain_chunk;
     uint32_t embedder_chain_used;
+    struct UcTranslationTiming *embedder_translation_timing;
 };
 
 // Metadata stub for the variable-size cpu context used with uc_context_*()
