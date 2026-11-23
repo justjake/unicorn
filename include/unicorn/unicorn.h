@@ -1491,6 +1491,8 @@ uc_err uc_embedder_tlbi_status(uc_engine *uc, uint32_t abi,
 UNICORN_EXPORT
 uc_err uc_embedder_tlbi_ack(uc_engine *uc, uint32_t abi, uint64_t owner,
                            uint64_t sequence);
+UNICORN_EXPORT
+uc_err uc_embedder_set_guard_diagnostics(uc_engine *uc, bool enabled);
 
 #ifdef __cplusplus
 }

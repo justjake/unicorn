@@ -3592,6 +3592,19 @@ uc_err uc_embedder_set_instruction_counter(uc_engine *uc, bool enabled)
 }
 
 UNICORN_EXPORT
+uc_err uc_embedder_set_guard_diagnostics(uc_engine *uc, bool enabled)
+{
+    UC_INIT(uc);
+    if (uc->embedder_guard_diagnostics != enabled) {
+        uc->embedder_guard_diagnostics = enabled;
+        uc->cpu->cflags_next_tb = -1;
+        uc->tb_flush(uc);
+    }
+    restore_jit_state(uc);
+    return UC_ERR_OK;
+}
+
+UNICORN_EXPORT
 uc_err uc_embedder_reset_instruction_counter(uc_engine *uc)
 {
     UC_INIT(uc);

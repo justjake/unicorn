@@ -11378,7 +11378,7 @@ static void arm_tr_tb_start(DisasContextBase *dcbase, CPUState *cpu)
     // by code hooks. Keep blocks that enter with active ITSTATE on the helper
     // path, where the embedder can observe those instruction boundaries.
     if (dc->thumb && (dc->condexec_mask || dc->condexec_cond)) {
-        dc->uc->embedder_tb_slow = true;
+        UC_EMBEDDER_MARK_TB_SLOW(dc->uc, UC_EMBEDDER_TB_SLOW_OTHER);
     }
 
     /* A note on handling of the condexec (IT) bits:
@@ -11602,7 +11602,7 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         if (uc->embedder_acct.enabled == 3 || uc->embedder_acct.enabled == 4) {
             // The pre-translation check can terminate before decoding an
             // instruction, so tb->icount may include a synthetic entry.
-            uc->embedder_tb_slow = true;
+            UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_OTHER);
         }
         return;
     }
@@ -11612,7 +11612,7 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         if (uc->embedder_acct.enabled == 3 || uc->embedder_acct.enabled == 4) {
             // translator_loop counts this synthetic run-until terminator in
             // tb->icount; the block must use the helper instead of pre-debit.
-            uc->embedder_tb_slow = true;
+            UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_OTHER);
         }
         // imitate WFI instruction to halt emulation
         dcbase->is_jmp = DISAS_WFI;
@@ -11642,13 +11642,13 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
                                                 dc->base.pc_next - insn_size,
                                                 insn);
         if (decision & 4) {
-            uc->embedder_tb_slow = true;
+            UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_CLASSIFIER);
         }
     }
     if (active_it) {
         // The translation filter receives the instruction word but not the
         // incoming ITSTATE. Active IT instructions therefore remain observed.
-        uc->embedder_tb_slow = true;
+        UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_OTHER);
     }
 
     // Memory hooks retain the atomic IT-block behavior. Code hooks below
@@ -11661,7 +11661,7 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         if (uc->embedder_acct.enabled == 3 || uc->embedder_acct.enabled == 4) {
             // A code hook may stop before this instruction retires, so the
             // translated instruction count cannot be debited as a whole.
-            uc->embedder_tb_slow = true;
+            UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_OTHER);
         }
         
         // Publish the current architectural state before the callback.
@@ -11692,7 +11692,7 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 
     if (dc->condexec_mask || dc->condexec_cond) {
         // Includes an IT instruction, which establishes state in the decoder.
-        uc->embedder_tb_slow = true;
+        UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_OTHER);
     }
 
     /* Advance the Thumb condexec condition.  */

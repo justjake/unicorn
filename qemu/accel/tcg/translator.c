@@ -42,6 +42,7 @@ void translator_loop_temp_check(DisasContextBase *db)
  */
 struct EmbedderBlockGuard {
     TCGOp *fast;
+    TCGOp *slow_reason;
     TCGOp *count_low;
     TCGOp *count_high;
     TCGOp *size;
@@ -54,6 +55,23 @@ struct EmbedderBlockGuard {
     bool active;
 };
 
+static void gen_embedder_guard_counter(TCGContext *tcg_ctx,
+                                      struct uc_struct *uc,
+                                      enum uc_embedder_exit_counter counter)
+{
+    TCGv_i64 value = tcg_temp_new_i64(tcg_ctx);
+    TCGv_ptr ucp = tcg_const_ptr(tcg_ctx, uc);
+    tcg_gen_ld_i64(tcg_ctx, value, ucp,
+                   offsetof(struct uc_struct, embedder_exit_counters) +
+                       counter * sizeof(uint64_t));
+    tcg_gen_addi_i64(tcg_ctx, value, value, 1);
+    tcg_gen_st_i64(tcg_ctx, value, ucp,
+                   offsetof(struct uc_struct, embedder_exit_counters) +
+                       counter * sizeof(uint64_t));
+    tcg_temp_free_i64(tcg_ctx, value);
+    tcg_temp_free_ptr(tcg_ctx, ucp);
+}
+
 static void gen_embedder_block_guard(TCGContext *tcg_ctx,
                                      struct uc_struct *uc, target_ulong pc,
                                      struct EmbedderBlockGuard *guard)
@@ -61,12 +79,17 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
     TCGLabel *helper = gen_new_label(tcg_ctx);
     TCGLabel *body = gen_new_label(tcg_ctx);
     TCGLabel *pause_checked = gen_new_label(tcg_ctx);
+    TCGLabel *slow = uc->embedder_guard_diagnostics ? gen_new_label(tcg_ctx) : helper;
+    TCGLabel *pause = uc->embedder_guard_diagnostics ? gen_new_label(tcg_ctx) : helper;
+    TCGLabel *disarmed = uc->embedder_guard_diagnostics ? gen_new_label(tcg_ctx) : helper;
+    TCGLabel *page_mismatch = uc->embedder_guard_diagnostics ? gen_new_label(tcg_ctx) : helper;
+    TCGLabel *budget_miss = uc->embedder_guard_diagnostics ? gen_new_label(tcg_ctx) : helper;
     TCGOp *before_helper;
 
     guard->active = true;
     guard->fast_value = tcg_const_i32(tcg_ctx, 1);
     guard->fast = tcg_last_op(tcg_ctx);
-    tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_EQ, guard->fast_value, 0, helper);
+    tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_EQ, guard->fast_value, 0, slow);
 
     // A pending stop is handled by the block-entry exit test; it must not be
     // debited as an executed block.
@@ -84,7 +107,7 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
     tcg_gen_brcondi_ptr(tcg_ctx, TCG_COND_EQ, pause_requested, 0, pause_checked);
     TCGv_i32 paused = tcg_temp_new_i32(tcg_ctx);
     tcg_gen_ld_i32(tcg_ctx, paused, pause_requested, 0);
-    tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_NE, paused, 0, helper);
+    tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_NE, paused, 0, pause);
     gen_set_label(tcg_ctx, pause_checked);
 
     // Coarse (2) and exact (1) accounting are translated inline; exact
@@ -99,23 +122,23 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
         // Distinct constants keep cached mode3 and mode4 TBs isolated.
         guard->thumb_mode = uc->embedder_acct.enabled == 4 ? 4 : 3;
         tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, enabled,
-                            guard->thumb_mode, helper);
+                            guard->thumb_mode, disarmed);
         TCGv_i64 thumb_page = tcg_temp_new_i64(tcg_ctx);
         ucp = tcg_const_ptr(tcg_ctx, uc);
         tcg_gen_ld_i64(tcg_ctx, thumb_page, ucp,
                        offsetof(struct uc_struct, embedder_acct.thumb_page));
         tcg_temp_free_ptr(tcg_ctx, ucp);
         tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, thumb_page,
-                            (int64_t)(pc & ~UINT64_C(0xfff)), helper);
+                            (int64_t)(pc & ~UINT64_C(0xfff)), page_mismatch);
         tcg_temp_free_i64(tcg_ctx, thumb_page);
     } else {
 #if TCG_TARGET_REG_BITS == 64
         TCGv_i64 mode = tcg_temp_new_i64(tcg_ctx);
         tcg_gen_subi_i64(tcg_ctx, mode, enabled, 1);
-        tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_GTU, mode, 1, helper);
+        tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_GTU, mode, 1, disarmed);
         tcg_temp_free_i64(tcg_ctx, mode);
 #else
-        tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, enabled, 2, helper);
+        tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, enabled, 2, disarmed);
 #endif
     }
 
@@ -137,7 +160,7 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
                    offsetof(struct uc_struct, embedder_acct.budget));
     tcg_temp_free_ptr(tcg_ctx, ucp);
     tcg_gen_sub_i64(tcg_ctx, budget, budget, guard->count_value);
-    tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_LT, budget, 0, helper);
+    tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_LT, budget, 0, budget_miss);
     ucp = tcg_const_ptr(tcg_ctx, uc);
     tcg_gen_st_i64(tcg_ctx, budget, ucp,
                    offsetof(struct uc_struct, embedder_acct.budget));
@@ -194,6 +217,44 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
     tcg_temp_free_ptr(tcg_ctx, ucp);
 #endif
     tcg_gen_br(tcg_ctx, body);
+
+    if (uc->embedder_guard_diagnostics) {
+        TCGLabel *classifier_slow = gen_new_label(tcg_ctx);
+        TCGLabel *page_span = gen_new_label(tcg_ctx);
+        TCGLabel *slow_other = gen_new_label(tcg_ctx);
+
+        gen_set_label(tcg_ctx, slow);
+        TCGv_i32 reason = tcg_const_i32(tcg_ctx, 0);
+        guard->slow_reason = tcg_last_op(tcg_ctx);
+        tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_EQ, reason,
+                            UC_EMBEDDER_TB_SLOW_CLASSIFIER, classifier_slow);
+        tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_EQ, reason, 3, page_span);
+        tcg_gen_br(tcg_ctx, slow_other);
+
+        gen_set_label(tcg_ctx, classifier_slow);
+        gen_embedder_guard_counter(tcg_ctx, uc, UC_COUNT_GUARD_CLASSIFIER_SLOW);
+        tcg_gen_br(tcg_ctx, helper);
+        gen_set_label(tcg_ctx, page_span);
+        gen_embedder_guard_counter(tcg_ctx, uc, UC_COUNT_GUARD_THUMB_PAGE_SPAN);
+        tcg_gen_br(tcg_ctx, helper);
+        gen_set_label(tcg_ctx, slow_other);
+        gen_embedder_guard_counter(tcg_ctx, uc, UC_COUNT_GUARD_OTHER_SLOW);
+        tcg_gen_br(tcg_ctx, helper);
+
+        gen_set_label(tcg_ctx, pause);
+        gen_embedder_guard_counter(tcg_ctx, uc, UC_COUNT_GUARD_PAUSE);
+        tcg_gen_br(tcg_ctx, helper);
+        gen_set_label(tcg_ctx, disarmed);
+        gen_embedder_guard_counter(tcg_ctx, uc, UC_COUNT_GUARD_DISARMED);
+        tcg_gen_br(tcg_ctx, helper);
+        gen_set_label(tcg_ctx, page_mismatch);
+        gen_embedder_guard_counter(tcg_ctx, uc, UC_COUNT_GUARD_PAGE_MISMATCH);
+        tcg_gen_br(tcg_ctx, helper);
+        gen_set_label(tcg_ctx, budget_miss);
+        gen_embedder_guard_counter(tcg_ctx, uc, UC_COUNT_GUARD_BUDGET);
+        tcg_gen_br(tcg_ctx, helper);
+        tcg_temp_free_i32(tcg_ctx, reason);
+    }
 
     gen_set_label(tcg_ctx, helper);
     before_helper = tcg_last_op(tcg_ctx);
@@ -356,6 +417,7 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
     // tcg_dump_ops(tcg_ctx, false, "translator loop");
 
     uc->embedder_tb_slow = false;
+    uc->embedder_tb_slow_reason = 0;
 
     /* Start translating.  */
     if (chain_body && (uc->embedder_block_exits ||
@@ -411,7 +473,7 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
                          uc->embedder_acct.enabled == 4)) {
                         // A breakpoint can stop before a translated instruction
                         // retires; do not pre-debit this Thumb block.
-                        uc->embedder_tb_slow = true;
+                        UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_OTHER);
                     }
                     if (ops->breakpoint_check(db, cpu, bp)) {
                         bp_insn = 1;
@@ -439,7 +501,7 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
         // Code-coherence watches are installed by the filter before execution,
         // so this bit is reserved for observers that need each block entry.
         if (uc->embedder_insn_decision & 4) {
-            uc->embedder_tb_slow = true;
+            UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_CLASSIFIER);
         }
         /* Stop translation if translate_insn so indicated.  */
         if (db->is_jmp != DISAS_NEXT) {
@@ -530,6 +592,16 @@ _end_loop:
                         (!uc->embedder_tb_thumb ||
                          (thumb_mode && thumb_page));
             tcg_set_insn_param(embedder_guard.fast, 1, fast ? 1 : 0);
+            if (uc->embedder_guard_diagnostics && !fast) {
+                uint32_t reason = UC_EMBEDDER_TB_SLOW_OTHER;
+                if (uc->embedder_tb_slow_reason ==
+                    UC_EMBEDDER_TB_SLOW_CLASSIFIER) {
+                    reason = UC_EMBEDDER_TB_SLOW_CLASSIFIER;
+                } else if (uc->embedder_tb_thumb && !thumb_page) {
+                    reason = 3; // translated bytes cross the enabled 4 KiB page
+                }
+                tcg_set_insn_param(embedder_guard.slow_reason, 1, reason);
+            }
             tcg_set_insn_param(embedder_guard.count_low, 1,
                                (uint32_t)db->tb->icount);
             if (embedder_guard.count_high) {

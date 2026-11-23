@@ -291,6 +291,12 @@ enum uc_embedder_exit_counter {
     // Appended diagnostic counters, gated by uc_embedder_features bit 8192.
     UC_COUNT_WATCHED_STORE_REMEMBERED, UC_COUNT_WATCHED_STORE_TERMINAL_REQUESTS,
     UC_COUNT_WATCHED_STORE_CAP,
+    // Guard refusal counts are callback attempts, not retired instructions.
+    // Appended and gated by uc_embedder_features bit 16384.
+    UC_COUNT_GUARD_CLASSIFIER_SLOW, UC_COUNT_GUARD_OTHER_SLOW,
+    UC_COUNT_GUARD_THUMB_PAGE_SPAN, UC_COUNT_GUARD_DISARMED,
+    UC_COUNT_GUARD_PAGE_MISMATCH, UC_COUNT_GUARD_BUDGET,
+    UC_COUNT_GUARD_PAUSE,
     UC_EXIT_COUNTER_COUNT
 };
 
@@ -305,6 +311,15 @@ typedef struct uc_backing_observer {
     uint64_t *summary;
 } uc_backing_observer;
 #define UC_BACKING_OBSERVERS 32
+#define UC_EMBEDDER_TB_SLOW_CLASSIFIER 1
+#define UC_EMBEDDER_TB_SLOW_OTHER 2
+#define UC_EMBEDDER_MARK_TB_SLOW(uc, reason) do { \
+    (uc)->embedder_tb_slow = true; \
+    if ((uc)->embedder_guard_diagnostics && \
+        !(uc)->embedder_tb_slow_reason) { \
+        (uc)->embedder_tb_slow_reason = (reason); \
+    } \
+} while (0)
 
 // embedder: block chains. The record the embedder shares with translated
 // code (uc_embedder_block_chain). The embedder reads and writes it from hooks
@@ -560,6 +575,10 @@ struct uc_struct {
     // request or retry is pending, and omits the per-access helpers.
     bool embedder_entry_exits;
     bool embedder_instruction_counter;
+    bool embedder_guard_diagnostics;
+    // Why a translated block was made slow: classifier refusal or another
+    // observer/translation constraint. Zero means no slow-path reason.
+    uint8_t embedder_tb_slow_reason;
     // embedder: budgeted block accounting (uc_embedder_accounting). A block
     // translated as fast (A32 block hook size bit 30, or Thumb mode 3/4) runs
     // without calling hooks:
