@@ -302,6 +302,9 @@ static void tlb_flush_by_mmuidx_async_work(CPUState *cpu, run_on_cpu_data data)
 
     if (!cpu->uc->embedder_keep_code_caches) {
         cpu_tb_jmp_cache_clear(cpu);
+        if (all_dirty == 0) {
+            cpu->uc->embedder_ng_cached = false;
+        }
     }
 
     if (to_clean == ALL_MMUIDX_BITS) {

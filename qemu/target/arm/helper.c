@@ -299,7 +299,12 @@ static void contextidr_write(CPUARMState *env, const ARMCPRegInfo *ri,
     ARMCPU *cpu = env_archcpu(env);
 
     if (raw_read(env, ri) != value && !arm_feature(env, ARM_FEATURE_PMSA)
-        && !extended_addresses_enabled(env)) {
+        && !extended_addresses_enabled(env)
+        /* Embedder: global translations hold for every ASID; flush only
+         * when a non-global one may be cached or a custom mapping provider
+         * may key its translations by the current ASID. */
+        && (env->uc->embedder_ng_cached ||
+            CPU(cpu)->cc->tlb_fill != CPU(cpu)->cc->tlb_fill_cpu)) {
         /* For VMSA (when not using the LPAE long descriptor page table
          * format) this register includes the ASID, so do a TLB flush.
          * For PMSA it is purely a process ID and no action is needed.
@@ -9664,6 +9669,9 @@ static bool get_phys_addr_v6(CPUARMState *env, uint32_t address,
         xn = desc & (1 << 4);
         pxn = desc & 1;
         ns = extract32(desc, 19, 1);
+        if (desc & (1 << 17)) {
+            env->uc->embedder_ng_cached = true;
+        }
     } else {
         if (arm_feature(env, ARM_FEATURE_PXN)) {
             pxn = (desc >> 2) & 1;
@@ -9677,6 +9685,9 @@ static bool get_phys_addr_v6(CPUARMState *env, uint32_t address,
             goto do_fault;
         }
         ap = ((desc >> 4) & 3) | ((desc >> 7) & 4);
+        if ((desc & 3) != 0 && (desc & (1 << 11))) {
+            env->uc->embedder_ng_cached = true;
+        }
         switch (desc & 3) {
         case 0: /* Page translation fault.  */
             fi->type = ARMFault_Translation;
