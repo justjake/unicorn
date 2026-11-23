@@ -11599,7 +11599,7 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     uint32_t insn_size;
 
     if (arm_pre_translate_insn(dc)) {
-        if (uc->embedder_acct.enabled == 3) {
+        if (uc->embedder_acct.enabled == 3 || uc->embedder_acct.enabled == 4) {
             // The pre-translation check can terminate before decoding an
             // instruction, so tb->icount may include a synthetic entry.
             uc->embedder_tb_slow = true;
@@ -11609,7 +11609,7 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 
     // Unicorn: end address tells us to stop emulation
     if (uc_addr_is_exit(uc, dcbase->pc_next)) {
-        if (uc->embedder_acct.enabled == 3) {
+        if (uc->embedder_acct.enabled == 3 || uc->embedder_acct.enabled == 4) {
             // translator_loop counts this synthetic run-until terminator in
             // tb->icount; the block must use the helper instead of pre-debit.
             uc->embedder_tb_slow = true;
@@ -11633,7 +11633,8 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     insn_size = is_16bit ? 2 : 4;
     active_it = dc->condexec_mask || dc->condexec_cond;
 
-    if (uc->embedder_acct.enabled == 3 && uc->embedder_insn_filter) {
+    if ((uc->embedder_acct.enabled == 3 || uc->embedder_acct.enabled == 4) &&
+        uc->embedder_insn_filter) {
         // This opt-in classification only decides whether translated block
         // accounting must retain its helper. It never changes Thumb hook or
         // instruction translation behavior.
@@ -11657,7 +11658,7 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 
     // Unicorn: trace this instruction on request
     if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_CODE, dc->base.pc_next - insn_size)) {
-        if (uc->embedder_acct.enabled == 3) {
+        if (uc->embedder_acct.enabled == 3 || uc->embedder_acct.enabled == 4) {
             // A code hook may stop before this instruction retires, so the
             // translated instruction count cannot be debited as a whole.
             uc->embedder_tb_slow = true;

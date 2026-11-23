@@ -33,8 +33,8 @@ void translator_loop_temp_check(DisasContextBase *db)
 }
 
 /*
- * embedder: budget accounting inside translated code. Fast ARM blocks load
- * the interactive budget, subtract their instruction count and fall through;
+ * embedder: budget accounting inside translated code. Fast ARM and opted-in
+ * Thumb blocks load the interactive budget, subtract their instruction count and fall through;
  * a miss or a slow block enters the ordinary helper, which owns pause,
  * exact-policy ring writes, hook dispatch and refusal. The fast flag, the
  * instruction count and the helper's size immediate are patched after the
@@ -46,8 +46,11 @@ struct EmbedderBlockGuard {
     TCGOp *count_high;
     TCGOp *size;
     TCGOp *packed;
+    TCGOp *record_bytes;
+    TCGOp *record_icount;
     TCGv_i32 fast_value;
     TCGv_i64 count_value;
+    uint64_t thumb_mode;
     bool active;
 };
 
@@ -92,9 +95,11 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
                    offsetof(struct uc_struct, embedder_acct.enabled));
     tcg_temp_free_ptr(tcg_ctx, ucp);
     if (uc->embedder_tb_thumb) {
-        // Translation mode is fixed by this TB's flags. Emit a mode-specific
-        // guard so cached ARM and Thumb blocks cannot consume each other's mode.
-        tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, enabled, 3, helper);
+        // Translation mode is fixed by this TB's flags and accounting mode.
+        // Distinct constants keep cached mode3 and mode4 TBs isolated.
+        guard->thumb_mode = uc->embedder_acct.enabled == 4 ? 4 : 3;
+        tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, enabled,
+                            guard->thumb_mode, helper);
         TCGv_i64 thumb_page = tcg_temp_new_i64(tcg_ctx);
         ucp = tcg_const_ptr(tcg_ctx, uc);
         tcg_gen_ld_i64(tcg_ctx, thumb_page, ucp,
@@ -137,6 +142,27 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
     tcg_gen_st_i64(tcg_ctx, budget, ucp,
                    offsetof(struct uc_struct, embedder_acct.budget));
     tcg_temp_free_ptr(tcg_ctx, ucp);
+    if (uc->embedder_tb_thumb && guard->thumb_mode == 4) {
+        ucp = tcg_const_ptr(tcg_ctx, uc);
+        TCGv_i64 start = tcg_const_i64(tcg_ctx, pc);
+        tcg_gen_st_i64(tcg_ctx, start, ucp,
+                       offsetof(struct uc_struct, embedder_acct.last_block_start));
+        tcg_temp_free_i64(tcg_ctx, start);
+        tcg_gen_st_i64(tcg_ctx, budget, ucp,
+                       offsetof(struct uc_struct,
+                                embedder_acct.last_block_remaining_budget));
+        TCGv_i32 bytes = tcg_const_i32(tcg_ctx, 0);
+        guard->record_bytes = tcg_last_op(tcg_ctx);
+        tcg_gen_st_i32(tcg_ctx, bytes, ucp,
+                       offsetof(struct uc_struct, embedder_acct.last_block_bytes));
+        TCGv_i32 icount = tcg_const_i32(tcg_ctx, 0);
+        guard->record_icount = tcg_last_op(tcg_ctx);
+        tcg_gen_st_i32(tcg_ctx, icount, ucp,
+                       offsetof(struct uc_struct, embedder_acct.last_block_icount));
+        tcg_temp_free_i32(tcg_ctx, bytes);
+        tcg_temp_free_i32(tcg_ctx, icount);
+        tcg_temp_free_ptr(tcg_ctx, ucp);
+    }
 #if TCG_TARGET_REG_BITS == 64
     tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, enabled, 1, body);
     ucp = tcg_const_ptr(tcg_ctx, uc);
@@ -371,7 +397,9 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
             CPUBreakpoint *bp;
             QTAILQ_FOREACH(bp, &cpu->breakpoints, entry) {
                 if (bp->pc == db->pc_next) {
-                    if (uc->embedder_tb_thumb && uc->embedder_acct.enabled == 3) {
+                    if (uc->embedder_tb_thumb &&
+                        (uc->embedder_acct.enabled == 3 ||
+                         uc->embedder_acct.enabled == 4)) {
                         // A breakpoint can stop before a translated instruction
                         // retires; do not pre-debit this Thumb block.
                         uc->embedder_tb_slow = true;
@@ -479,11 +507,15 @@ _end_loop:
             bool thumb_page = db->tb->size != 0 &&
                 (db->pc_first & ~UINT64_C(0xfff)) ==
                     ((block_end - 1) & ~UINT64_C(0xfff));
+            bool thumb_mode = embedder_guard.thumb_mode ==
+                                  uc->embedder_acct.enabled &&
+                              (embedder_guard.thumb_mode == 3 ||
+                               embedder_guard.thumb_mode == 4);
             bool fast = !uc->embedder_tb_slow &&
                         (!uc->embedder_tb_thumb || !db->singlestep_enabled) &&
                         block_end <= (UINT64_C(1) << 32) &&
                         (!uc->embedder_tb_thumb ||
-                         (uc->embedder_acct.enabled == 3 && thumb_page));
+                         (thumb_mode && thumb_page));
             tcg_set_insn_param(embedder_guard.fast, 1, fast ? 1 : 0);
             tcg_set_insn_param(embedder_guard.count_low, 1,
                                (uint32_t)db->tb->icount);
@@ -494,6 +526,12 @@ _end_loop:
                 tcg_set_insn_param(embedder_guard.packed, 1,
                                    ((uint64_t)(uint32_t)db->pc_first << 32) |
                                        (uint32_t)(db->tb->size / 4));
+            }
+            if (embedder_guard.record_bytes) {
+                tcg_set_insn_param(embedder_guard.record_bytes, 1,
+                                   db->tb->size);
+                tcg_set_insn_param(embedder_guard.record_icount, 1,
+                                   db->tb->icount);
             }
         }
     }

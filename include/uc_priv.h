@@ -529,6 +529,7 @@ struct uc_struct {
     // instruction, 3 for the hook in place of the instruction: the hook performs
     // it (a failed condition is its no-op), no body is translated and the block
     // ends after it. Without a covering code hook, 3 translates the body as 2.
+    // Bit 4 asks for a block hook on every entry; it disables coarse accounting.
     // While installed, an instruction touching a page an unwatched memory hook
     // covers is restarted once as the last instruction of a block, and its
     // address ends later blocks (embedder_io_pcs).
@@ -555,11 +556,13 @@ struct uc_struct {
     bool embedder_entry_exits;
     bool embedder_instruction_counter;
     // embedder: budgeted block accounting (uc_embedder_accounting). A block
-    // translated as fast (block hook size bit 30) runs without calling hooks:
+    // translated as fast (A32 block hook size bit 30, or Thumb mode 3/4) runs
+    // without calling hooks:
     // the translator subtracts its instruction count from the budget and only
     // enters this helper when the budget runs out or a pause arrives. With
     // enabled == 1 the helper also pushes (start << 32 | count) to the ring;
-    // with enabled == 2 the ring is not written.
+    // with enabled == 2 the ring is not written. Thumb modes 3 and 4 use the
+    // enabled page in thumb_page; mode 4 also records each admitted block.
     struct {
         int64_t budget;
         uint64_t head;
@@ -570,6 +573,12 @@ struct uc_struct {
         // Thumb coarse accounting is restricted to this enabled 4 KiB page.
         // Appended so the existing field offsets remain stable.
         uint64_t thumb_page;
+        // Mode 4 records each admitted Thumb block before entering guest code.
+        // last_block_bytes == 0 means no record is available.
+        uint64_t last_block_start;
+        int64_t last_block_remaining_budget;
+        uint32_t last_block_bytes;
+        uint32_t last_block_icount;
     } embedder_acct;
     // Observational host counters, never serialized in a CPU context. Entries
     // 0..6 are actual jumps by call site; 7..9 are request origins; 10..11
