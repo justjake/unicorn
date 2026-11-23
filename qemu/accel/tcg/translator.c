@@ -371,6 +371,11 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
             CPUBreakpoint *bp;
             QTAILQ_FOREACH(bp, &cpu->breakpoints, entry) {
                 if (bp->pc == db->pc_next) {
+                    if (uc->embedder_tb_thumb && uc->embedder_acct.enabled == 3) {
+                        // A breakpoint can stop before a translated instruction
+                        // retires; do not pre-debit this Thumb block.
+                        uc->embedder_tb_slow = true;
+                    }
                     if (ops->breakpoint_check(db, cpu, bp)) {
                         bp_insn = 1;
                         break;
@@ -475,6 +480,7 @@ _end_loop:
                 (db->pc_first & ~UINT64_C(0xfff)) ==
                     ((block_end - 1) & ~UINT64_C(0xfff));
             bool fast = !uc->embedder_tb_slow &&
+                        (!uc->embedder_tb_thumb || !db->singlestep_enabled) &&
                         block_end <= (UINT64_C(1) << 32) &&
                         (!uc->embedder_tb_thumb ||
                          (uc->embedder_acct.enabled == 3 && thumb_page));

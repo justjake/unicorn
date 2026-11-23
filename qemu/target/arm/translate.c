@@ -11599,11 +11599,21 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     uint32_t insn_size;
 
     if (arm_pre_translate_insn(dc)) {
+        if (uc->embedder_acct.enabled == 3) {
+            // The pre-translation check can terminate before decoding an
+            // instruction, so tb->icount may include a synthetic entry.
+            uc->embedder_tb_slow = true;
+        }
         return;
     }
 
     // Unicorn: end address tells us to stop emulation
     if (uc_addr_is_exit(uc, dcbase->pc_next)) {
+        if (uc->embedder_acct.enabled == 3) {
+            // translator_loop counts this synthetic run-until terminator in
+            // tb->icount; the block must use the helper instead of pre-debit.
+            uc->embedder_tb_slow = true;
+        }
         // imitate WFI instruction to halt emulation
         dcbase->is_jmp = DISAS_WFI;
         return;
@@ -11647,6 +11657,11 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 
     // Unicorn: trace this instruction on request
     if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_CODE, dc->base.pc_next - insn_size)) {
+        if (uc->embedder_acct.enabled == 3) {
+            // A code hook may stop before this instruction retires, so the
+            // translated instruction count cannot be debited as a whole.
+            uc->embedder_tb_slow = true;
+        }
         
         // Publish the current architectural state before the callback.
         gen_set_pc_im(dc, dc->base.pc_next - insn_size);
