@@ -11597,6 +11597,7 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     bool is_16bit;
     bool active_it;
     uint32_t insn_size;
+    int embedder_decision = 1;
 
     if (arm_pre_translate_insn(dc)) {
         if (uc->embedder_acct.enabled == 3 || uc->embedder_acct.enabled == 4) {
@@ -11638,10 +11639,10 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         // This opt-in classification only decides whether translated block
         // accounting must retain its helper. It never changes Thumb hook or
         // instruction translation behavior.
-        int decision = uc->embedder_insn_filter(uc->embedder_filter_user,
-                                                dc->base.pc_next - insn_size,
-                                                insn);
-        if (decision & 4) {
+        embedder_decision = uc->embedder_insn_filter(uc->embedder_filter_user,
+                                                     dc->base.pc_next - insn_size,
+                                                     insn);
+        if (embedder_decision & 4) {
             if (uc->embedder_guard_diagnostics &&
                 !uc->embedder_tb_slow_reason) {
                 uc->embedder_tb_slow_pc = dc->base.pc_next - insn_size;
@@ -11711,6 +11712,17 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     }
 
     arm_post_translate_insn(dc);
+
+    if (embedder_decision & 8) {
+        if (uc->embedder_acct.enabled != 4) {
+            // Execute-and-end is only an inline-safe contract for mode 4.
+            // Other modes retain helper accounting and observed execution.
+            UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_OTHER);
+        }
+        if (dc->base.is_jmp == DISAS_NEXT) {
+            dc->base.is_jmp = DISAS_TOO_MANY;
+        }
+    }
 
     /* Thumb is a variable-length ISA.  Stop translation when the next insn
      * will touch a new page.  This ensures that prefetch aborts occur at
