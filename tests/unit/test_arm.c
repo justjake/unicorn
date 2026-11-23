@@ -1451,6 +1451,117 @@ static void test_arm_embedder_block_chains(void)
     TEST_CHECK(r0 == 40 && r1 == 40);
 }
 
+static void test_arm_contextidr_short_descriptors(void)
+{
+    const uint32_t code[] = {
+        LEINT32(0xe5914000), /* ldr r4, [r1]: fill the TLB */
+        LEINT32(0xe5832000), /* str r2, [r3]: replace the descriptor */
+        LEINT32(0xee0d0f30), /* mcr p15, 0, r0, c13, c0, 1: change ASID */
+        LEINT32(0xe5915000), /* ldr r5, [r1]: only a global entry survives */
+        LEINT32(0xee080f17), /* mcr p15, 0, r0, c8, c7, 0: invalidate all */
+        LEINT32(0xe5916000), /* ldr r6, [r1]: use the new descriptor */
+    };
+    const uint32_t data_va = 0x100000;
+    const uint32_t asid = 1;
+    const uint32_t cpsr = 0xd3; /* Secure SVC, IRQ and FIQ masked. */
+    const uint32_t direct = LEINT32(0x0c0e);
+    const uint32_t old_word = LEINT32(0x11);
+    const uint32_t new_word = LEINT32(0x22);
+    for (unsigned nonglobal = 0; nonglobal <= 1; nonglobal++) {
+        uc_engine *uc;
+        uc_arm_cp_reg cp = { .cp = 15, .sec = 1, .crn = 1, .crm = 1 };
+        uint32_t page_table_slot = 0x4004;
+        uint32_t attr = 0x0c0e | (nonglobal << 17);
+        uint32_t first = LEINT32(0x100000 | attr);
+        uint32_t replacement = 0x200000 | attr;
+        uint32_t r4, r5, r6;
+
+        OK(uc_open(UC_ARCH_ARM, UC_MODE_ARM, &uc));
+        OK(uc_ctl_set_cpu_model(uc, UC_CPU_ARM_CORTEX_A7));
+        OK(uc_mem_map(uc, 0, 0x300000, UC_PROT_ALL));
+        OK(uc_mem_write(uc, code_start, code, sizeof(code)));
+        OK(uc_mem_write(uc, 0x4000, &direct, sizeof(direct)));
+        OK(uc_mem_write(uc, page_table_slot, &first, sizeof(first)));
+        OK(uc_mem_write(uc, 0x100000, &old_word, sizeof(old_word)));
+        OK(uc_mem_write(uc, 0x200000, &new_word, sizeof(new_word)));
+        OK(uc_reg_write(uc, UC_ARM_REG_CPSR, &cpsr));
+        OK(uc_reg_write(uc, UC_ARM_REG_R0, &asid));
+        OK(uc_reg_write(uc, UC_ARM_REG_R1, &data_va));
+        OK(uc_reg_write(uc, UC_ARM_REG_R2, &replacement));
+        OK(uc_reg_write(uc, UC_ARM_REG_R3, &page_table_slot));
+
+        OK(uc_reg_write(uc, UC_ARM_REG_CP_REG, &cp)); /* SCR.NS = 0 */
+        cp.crn = 2;
+        cp.crm = 0;
+        cp.val = 0x4000;
+        OK(uc_reg_write(uc, UC_ARM_REG_CP_REG, &cp)); /* TTBR0 */
+        cp.crn = 3;
+        cp.val = 0xffffffff;
+        OK(uc_reg_write(uc, UC_ARM_REG_CP_REG, &cp)); /* DACR */
+        cp.crn = 1;
+        OK(uc_reg_read(uc, UC_ARM_REG_CP_REG, &cp));
+        cp.val |= (1u << 23) | 1; /* XP and M */
+        OK(uc_reg_write(uc, UC_ARM_REG_CP_REG, &cp)); /* SCTLR */
+        OK(uc_emu_start(uc, code_start, code_start + sizeof(code), 0, 0));
+        OK(uc_reg_read(uc, UC_ARM_REG_R4, &r4));
+        OK(uc_reg_read(uc, UC_ARM_REG_R5, &r5));
+        OK(uc_reg_read(uc, UC_ARM_REG_R6, &r6));
+        TEST_CHECK(r4 == 0x11);
+        TEST_CHECK(r5 == (nonglobal ? 0x22 : 0x11));
+        TEST_CHECK(r6 == 0x22);
+        OK(uc_close(uc));
+    }
+}
+
+static bool contextidr_tlb_fill(uc_engine *uc, uint64_t addr,
+                               uc_mem_type type, uc_tlb_entry *result,
+                               void *userdata)
+{
+    result->paddr = addr;
+    if (addr == 0x100000) {
+        uc_arm_cp_reg context = { .cp = 15, .crn = 13, .opc2 = 1 };
+        OK(uc_reg_read(uc, UC_ARM_REG_CP_REG, &context));
+        if (context.val & 0xff) {
+            result->paddr = 0x200000;
+        }
+    }
+    result->perms = UC_PROT_ALL;
+    return true;
+}
+
+static void test_arm_contextidr_virtual_tlb(void)
+{
+    const uint32_t code[] = {
+        LEINT32(0xe5914000), /* ldr r4, [r1] */
+        LEINT32(0xee0d0f30), /* mcr p15, 0, r0, c13, c0, 1 */
+        LEINT32(0xe5915000), /* ldr r5, [r1] */
+    };
+    const uint32_t asid = 1;
+    const uint32_t data_va = 0x100000;
+    const uint32_t old_word = LEINT32(0x11);
+    const uint32_t new_word = LEINT32(0x22);
+    uc_engine *uc;
+    uc_hook hook;
+    uint32_t r4, r5;
+
+    OK(uc_open(UC_ARCH_ARM, UC_MODE_ARM, &uc));
+    OK(uc_ctl_set_cpu_model(uc, UC_CPU_ARM_CORTEX_A7));
+    OK(uc_ctl_tlb_mode(uc, UC_TLB_VIRTUAL));
+    OK(uc_mem_map(uc, 0, 0x300000, UC_PROT_ALL));
+    OK(uc_mem_write(uc, code_start, code, sizeof(code)));
+    OK(uc_mem_write(uc, 0x100000, &old_word, sizeof(old_word)));
+    OK(uc_mem_write(uc, 0x200000, &new_word, sizeof(new_word)));
+    OK(uc_reg_write(uc, UC_ARM_REG_R0, &asid));
+    OK(uc_reg_write(uc, UC_ARM_REG_R1, &data_va));
+    OK(uc_hook_add(uc, &hook, UC_HOOK_TLB_FILL, contextidr_tlb_fill, NULL, 1, 0));
+    OK(uc_emu_start(uc, code_start, code_start + sizeof(code), 0, 0));
+    OK(uc_reg_read(uc, UC_ARM_REG_R4, &r4));
+    OK(uc_reg_read(uc, UC_ARM_REG_R5, &r5));
+    TEST_CHECK(r4 == 0x11);
+    TEST_CHECK(r5 == 0x22);
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_neon_align_qualifier", test_arm_neon_align_qualifier},
              {"test_arm_embedder_store_watched", test_arm_embedder_store_watched},
@@ -1488,5 +1599,8 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_thumb_tcg_opcode_cmn", test_arm_thumb_tcg_opcode_cmn},
              {"test_arm_cp15_c1_c0_2", test_arm_cp15_c1_c0_2},
              {"test_arm_v7_lpae", test_arm_v7_lpae},
+             {"test_arm_contextidr_short_descriptors",
+              test_arm_contextidr_short_descriptors},
+             {"test_arm_contextidr_virtual_tlb", test_arm_contextidr_virtual_tlb},
              {"test_arm_svc_hvc_syndrome", test_arm_svc_hvc_syndrome},
              {NULL, NULL}};
