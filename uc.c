@@ -3607,7 +3607,7 @@ uint64_t uc_embedder_instruction_counter(uc_engine *uc)
 // embedder: the budgeted block accounting record (uc_priv.h): the embedder reads
 // and writes budget and head directly; ring/mask/enabled/pause_requested are
 // set while no emulation runs. Layout: int64 budget, u64 head, u64 *ring,
-// u64 mask, u64 enabled, u32 *pause_requested.
+// u64 mask, u64 enabled, u32 *pause_requested, u64 thumb_page.
 UNICORN_EXPORT
 void *uc_embedder_accounting(uc_engine *uc)
 {

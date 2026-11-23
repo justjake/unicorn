@@ -11374,6 +11374,13 @@ static void arm_tr_tb_start(DisasContextBase *dcbase, CPUState *cpu)
     DisasContext *dc = container_of(dcbase, DisasContext, base);
     TCGContext *tcg_ctx = dc->uc->tcg_ctx;
 
+    // ITSTATE affects instruction conditions and is published per instruction
+    // by code hooks. Keep blocks that enter with active ITSTATE on the helper
+    // path, where the embedder can observe those instruction boundaries.
+    if (dc->thumb && (dc->condexec_mask || dc->condexec_cond)) {
+        dc->uc->embedder_tb_slow = true;
+    }
+
     /* A note on handling of the condexec (IT) bits:
      *
      * We want to avoid the overhead of having to write the updated condexec
@@ -11588,6 +11595,7 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     CPUARMState *env = cpu->env_ptr;
     uint32_t insn;
     bool is_16bit;
+    bool active_it;
     uint32_t insn_size;
 
     if (arm_pre_translate_insn(dc)) {
@@ -11612,6 +11620,25 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         dc->base.pc_next += 2;
     }
     dc->insn = insn;
+    insn_size = is_16bit ? 2 : 4;
+    active_it = dc->condexec_mask || dc->condexec_cond;
+
+    if (uc->embedder_acct.enabled == 3 && uc->embedder_insn_filter) {
+        // This opt-in classification only decides whether translated block
+        // accounting must retain its helper. It never changes Thumb hook or
+        // instruction translation behavior.
+        int decision = uc->embedder_insn_filter(uc->embedder_filter_user,
+                                                dc->base.pc_next - insn_size,
+                                                insn);
+        if (decision & 4) {
+            uc->embedder_tb_slow = true;
+        }
+    }
+    if (active_it) {
+        // The translation filter receives the instruction word but not the
+        // incoming ITSTATE. Active IT instructions therefore remain observed.
+        uc->embedder_tb_slow = true;
+    }
 
     // Memory hooks retain the atomic IT-block behavior. Code hooks below
     // publish PC and ITSTATE before testing the condition, so they can stop
@@ -11619,7 +11646,6 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     uc->no_exit_request = (dc->condexec_mask != 0);
 
     // Unicorn: trace this instruction on request
-    insn_size = is_16bit ? 2 : 4;
     if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_CODE, dc->base.pc_next - insn_size)) {
         
         // Publish the current architectural state before the callback.
@@ -11646,6 +11672,11 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         disas_thumb_insn(dc, insn);
     } else {
         disas_thumb2_insn(dc, insn);
+    }
+
+    if (dc->condexec_mask || dc->condexec_cond) {
+        // Includes an IT instruction, which establishes state in the decoder.
+        uc->embedder_tb_slow = true;
     }
 
     /* Advance the Thumb condexec condition.  */

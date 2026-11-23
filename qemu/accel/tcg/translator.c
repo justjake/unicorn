@@ -91,14 +91,28 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
     tcg_gen_ld_i64(tcg_ctx, enabled, ucp,
                    offsetof(struct uc_struct, embedder_acct.enabled));
     tcg_temp_free_ptr(tcg_ctx, ucp);
+    if (uc->embedder_tb_thumb) {
+        // Translation mode is fixed by this TB's flags. Emit a mode-specific
+        // guard so cached ARM and Thumb blocks cannot consume each other's mode.
+        tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, enabled, 3, helper);
+        TCGv_i64 thumb_page = tcg_temp_new_i64(tcg_ctx);
+        ucp = tcg_const_ptr(tcg_ctx, uc);
+        tcg_gen_ld_i64(tcg_ctx, thumb_page, ucp,
+                       offsetof(struct uc_struct, embedder_acct.thumb_page));
+        tcg_temp_free_ptr(tcg_ctx, ucp);
+        tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, thumb_page,
+                            (int64_t)(pc & ~UINT64_C(0xfff)), helper);
+        tcg_temp_free_i64(tcg_ctx, thumb_page);
+    } else {
 #if TCG_TARGET_REG_BITS == 64
-    TCGv_i64 mode = tcg_temp_new_i64(tcg_ctx);
-    tcg_gen_subi_i64(tcg_ctx, mode, enabled, 1);
-    tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_GTU, mode, 1, helper);
-    tcg_temp_free_i64(tcg_ctx, mode);
+        TCGv_i64 mode = tcg_temp_new_i64(tcg_ctx);
+        tcg_gen_subi_i64(tcg_ctx, mode, enabled, 1);
+        tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_GTU, mode, 1, helper);
+        tcg_temp_free_i64(tcg_ctx, mode);
 #else
-    tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, enabled, 2, helper);
+        tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, enabled, 2, helper);
 #endif
+    }
 
     guard->count_value = tcg_temp_new_i64(tcg_ctx);
 #if TCG_TARGET_REG_BITS == 32
@@ -456,12 +470,17 @@ _end_loop:
             tcg_op->args[1] |= 0x40000000u;
         }
         if (embedder_guard.active) {
-            bool fast = !uc->embedder_tb_thumb && !uc->embedder_tb_slow &&
-                        (uint64_t)db->pc_first + db->tb->size <=
-                            (UINT64_C(1) << 32);
+            uint64_t block_end = (uint64_t)db->pc_first + db->tb->size;
+            bool thumb_page = db->tb->size != 0 &&
+                (db->pc_first & ~UINT64_C(0xfff)) ==
+                    ((block_end - 1) & ~UINT64_C(0xfff));
+            bool fast = !uc->embedder_tb_slow &&
+                        block_end <= (UINT64_C(1) << 32) &&
+                        (!uc->embedder_tb_thumb ||
+                         (uc->embedder_acct.enabled == 3 && thumb_page));
             tcg_set_insn_param(embedder_guard.fast, 1, fast ? 1 : 0);
             tcg_set_insn_param(embedder_guard.count_low, 1,
-                               (uint32_t)(db->tb->size / 4));
+                               (uint32_t)db->tb->icount);
             if (embedder_guard.count_high) {
                 tcg_set_insn_param(embedder_guard.count_high, 1, 0);
             }
