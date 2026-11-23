@@ -629,6 +629,9 @@ struct uc_struct {
     bool tci_return_pending; // TCI helper asks for an unchained return
     /* Bumped whenever a translation dies, so cached targets can be dropped. */
     uint64_t embedder_tb_epoch;
+    /* A short-descriptor walk may have cached a non-global translation.
+     * Clear this only once all TLB modes are clean. */
+    bool embedder_ng_cached;
     /* Data-access hooks matching one 4 KiB page, per list (0 read, 1 write),
        valid while embedder_hook_gen is unchanged. Bumped on every hook list
        change. */
