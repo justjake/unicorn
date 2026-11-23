@@ -1,6 +1,7 @@
 #ifndef QEMU_TRANSLATION_TIMING_H
 #define QEMU_TRANSLATION_TIMING_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 struct uc_struct;
@@ -23,5 +24,11 @@ void uc_translation_timing_free(struct UcTranslationTiming *timing);
 void uc_translation_timing_record(struct uc_struct *uc,
                                   const UcTranslationTimingKey *key,
                                   uint64_t elapsed_ns);
+void uc_translation_timing_global_flush(struct uc_struct *uc);
+void uc_translation_timing_note_invalidation(struct uc_struct *uc,
+                                             const UcTranslationTimingKey *key,
+                                             uint32_t cause);
+const uint64_t *uc_translation_timing_repeat_counters(struct uc_struct *uc,
+                                                       size_t *count);
 
 #endif
