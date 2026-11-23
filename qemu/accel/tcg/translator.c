@@ -45,6 +45,8 @@ struct EmbedderBlockGuard {
     TCGOp *slow_reason;
     TCGOp *classifier_sample_pc;
     TCGOp *classifier_sample_word;
+    TCGOp *classifier_histogram_class;
+    TCGOp *classifier_histogram_icount;
     TCGOp *count_low;
     TCGOp *count_high;
     TCGOp *size;
@@ -74,10 +76,96 @@ static void gen_embedder_guard_counter(TCGContext *tcg_ctx,
     tcg_temp_free_ptr(tcg_ctx, ucp);
 }
 
+static unsigned int embedder_classifier_class(uint32_t word, bool thumb)
+{
+    if (!thumb) {
+        return UC_M4_CLASSIFIER_UNKNOWN_CLASS;
+    }
+    if (word <= UINT16_MAX) {
+        unsigned int family = word >> 12;
+        if (family == 4) {
+            if ((word & 0xff00) == 0x4700) {
+                return 5; // BX/BLX register.
+            }
+            if ((word & 0xf800) == 0x4800) {
+                return 6; // LDR literal.
+            }
+            return 4; // Register/data-processing operations.
+        }
+        if (family == 0xb) {
+            if ((word & 0xff00) == 0xbf00) {
+                return 13; // IT and hints.
+            }
+            if ((word & 0xfe00) == 0xb400) {
+                return 14; // PUSH.
+            }
+            if ((word & 0xfe00) == 0xbc00) {
+                return 15; // POP, including PC.
+            }
+            if ((word & 0xf500) == 0xb100) {
+                return 16; // CBZ/CBNZ.
+            }
+            return 17; // Other miscellaneous 0xb encodings.
+        }
+        if (family < 4) {
+            return family;
+        }
+        return family < 0xb ? family + 2 : family + 6;
+    }
+
+    unsigned int first = word >> 16;
+    unsigned int prefix = first >> 11;
+    if (prefix < 0x1d || prefix > 0x1f) {
+        return UC_M4_CLASSIFIER_UNKNOWN_CLASS;
+    }
+    return UC_M4_CLASSIFIER_NARROW_CLASSES +
+           (prefix - 0x1d) * 8 + ((first >> 8) & 0x7);
+}
+
+static void gen_embedder_classifier_histogram(TCGContext *tcg_ctx,
+                                              struct uc_struct *uc,
+                                              struct EmbedderBlockGuard *guard)
+{
+    // Both constants are patched after translation; guest execution only
+    // updates the selected callback/opportunity pair.
+    TCGv_i64 class_id = tcg_const_i64(tcg_ctx, 0);
+    guard->classifier_histogram_class = tcg_last_op(tcg_ctx);
+    TCGv_i64 icount = tcg_const_i64(tcg_ctx, 0);
+    guard->classifier_histogram_icount = tcg_last_op(tcg_ctx);
+    TCGv_i64 offset = tcg_temp_new_i64(tcg_ctx);
+    tcg_gen_shli_i64(tcg_ctx, offset, class_id, 4);
+    TCGv_ptr base = tcg_const_ptr(
+        tcg_ctx, &uc->embedder_exit_counters[UC_COUNT_M4_CLASSIFIER_FIRST]);
+    TCGv_ptr offset_ptr = tcg_temp_new_ptr(tcg_ctx);
+    tcg_gen_trunc_i64_ptr(tcg_ctx, offset_ptr, offset);
+    TCGv_ptr counters = tcg_temp_new_ptr(tcg_ctx);
+    tcg_gen_add_ptr(tcg_ctx, counters, base, offset_ptr);
+
+    TCGv_i64 callbacks = tcg_temp_new_i64(tcg_ctx);
+    tcg_gen_ld_i64(tcg_ctx, callbacks, counters, 0);
+    tcg_gen_addi_i64(tcg_ctx, callbacks, callbacks, 1);
+    tcg_gen_st_i64(tcg_ctx, callbacks, counters, 0);
+    tcg_gen_addi_ptr(tcg_ctx, counters, counters, sizeof(uint64_t));
+    TCGv_i64 opportunities = tcg_temp_new_i64(tcg_ctx);
+    tcg_gen_ld_i64(tcg_ctx, opportunities, counters, 0);
+    tcg_gen_add_i64(tcg_ctx, opportunities, opportunities, icount);
+    tcg_gen_st_i64(tcg_ctx, opportunities, counters, 0);
+
+    tcg_temp_free_i64(tcg_ctx, class_id);
+    tcg_temp_free_i64(tcg_ctx, icount);
+    tcg_temp_free_i64(tcg_ctx, offset);
+    tcg_temp_free_i64(tcg_ctx, callbacks);
+    tcg_temp_free_i64(tcg_ctx, opportunities);
+    tcg_temp_free_ptr(tcg_ctx, base);
+    tcg_temp_free_ptr(tcg_ctx, offset_ptr);
+    tcg_temp_free_ptr(tcg_ctx, counters);
+}
+
 static void gen_embedder_classifier_sample(TCGContext *tcg_ctx,
                                            struct uc_struct *uc,
                                            struct EmbedderBlockGuard *guard)
 {
+    gen_embedder_classifier_histogram(tcg_ctx, uc, guard);
     // Power-of-two refusal counts spread bounded samples from startup into a
     // long run without random state or per-callback work outside this slow path.
     TCGLabel *skip = gen_new_label(tcg_ctx);
@@ -679,6 +767,12 @@ _end_loop:
                                        uc->embedder_tb_slow_pc);
                     tcg_set_insn_param(embedder_guard.classifier_sample_word, 1,
                                        uc->embedder_tb_slow_word);
+                    tcg_set_insn_param(
+                        embedder_guard.classifier_histogram_class, 1,
+                        embedder_classifier_class(uc->embedder_tb_slow_word,
+                                                  uc->embedder_tb_thumb));
+                    tcg_set_insn_param(embedder_guard.classifier_histogram_icount, 1,
+                                       db->tb->icount);
                 }
             }
             tcg_set_insn_param(embedder_guard.count_low, 1,
