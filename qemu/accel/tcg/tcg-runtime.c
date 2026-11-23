@@ -156,7 +156,14 @@ void *HELPER(lookup_tb_ptr)(CPUArchState *env)
     uint64_t epoch = uc->embedder_tb_epoch;
     unsigned slot;
 
-    cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+#if defined(TARGET_ARM) && !defined(TARGET_AARCH64)
+    if (likely(arm_tb_state_fast(env, &pc, &flags))) {
+        cs_base = 0;
+    } else
+#endif
+    {
+        cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+    }
     cf_mask = (curr_cflags(cpu) & ~CF_CLUSTER_MASK) |
               ((uint32_t)cpu->cluster_index << CF_CLUSTER_SHIFT);
     slot = (unsigned)((pc >> 2) & (UC_EMBEDDER_TARGET_CACHE_SIZE - 1));

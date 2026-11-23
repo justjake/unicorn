@@ -3247,6 +3247,36 @@ static inline bool bswap_code(bool sctlr_b)
     return sctlr_b;
 }
 
+/* Register-dependent flags of an ordinary AArch32 A/R-profile block.
+ * M-profile, XScale and active architectural single step use the full
+ * state calculation. Keep the debug-mode hflags check there as well.
+ */
+static inline bool arm_tb_state_fast(CPUARMState *env, target_ulong *pc,
+                                     uint32_t *pflags)
+{
+#ifdef CONFIG_DEBUG_TCG
+    return false;
+#else
+    uint32_t flags = env->hflags;
+    if (unlikely(FIELD_EX32(flags, TBFLAG_ANY, AARCH64_STATE) ||
+                 FIELD_EX32(flags, TBFLAG_ANY, SS_ACTIVE) ||
+                 arm_feature(env, ARM_FEATURE_M) ||
+                 arm_feature(env, ARM_FEATURE_XSCALE))) {
+        return false;
+    }
+    FIELD_DP32(flags, TBFLAG_A32, VECLEN, env->vfp.vec_len, flags);
+    FIELD_DP32(flags, TBFLAG_A32, VECSTRIDE, env->vfp.vec_stride, flags);
+    if (env->vfp.xregs[ARM_VFP_FPEXC] & (1 << 30)) {
+        FIELD_DP32(flags, TBFLAG_A32, VFPEN, 1, flags);
+    }
+    FIELD_DP32(flags, TBFLAG_AM32, THUMB, env->thumb, flags);
+    FIELD_DP32(flags, TBFLAG_AM32, CONDEXEC, env->condexec_bits, flags);
+    *pc = env->regs[15];
+    *pflags = flags;
+    return true;
+#endif
+}
+
 void cpu_get_tb_cpu_state(CPUARMState *env, target_ulong *pc,
                           target_ulong *cs_base, uint32_t *flags);
 
