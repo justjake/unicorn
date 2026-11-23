@@ -148,6 +148,8 @@ typedef void (*uc_tcg_flush_tlb)(struct uc_struct *uc);
 // Invalidate the TB at given address
 typedef void (*uc_invalidate_tb_t)(struct uc_struct *uc, uint64_t start,
                                    size_t len);
+typedef void (*uc_invalidate_ram_range_t)(struct uc_struct *uc,
+                                          ram_addr_t start, ram_addr_t end);
 
 // Request generating TB at given address
 typedef uc_err (*uc_gen_tb_t)(struct uc_struct *uc, uint64_t pc, uc_tb *out_tb);
@@ -272,6 +274,15 @@ typedef struct TCGContext TCGContext;
 
 #define UC_EMBEDDER_GUARD_SAMPLE_CAP 32
 #define UC_EMBEDDER_GUARD_SAMPLE_MASK (UC_EMBEDDER_GUARD_SAMPLE_CAP - 1)
+// Thumb16 uses high-nibble families, splitting 0x4 into register/data,
+// BX/BLX, and literal LDR, and 0xb into IT/hints, PUSH, POP, CBZ/CBNZ, and
+// other miscellaneous encodings. Thumb32 uses prefix[15:11]/major[10:8]
+// for prefixes 0x1d..0x1f. Other words use the final unknown bucket.
+#define UC_M4_CLASSIFIER_NARROW_CLASSES 22
+#define UC_M4_CLASSIFIER_WIDE_CLASSES 24
+#define UC_M4_CLASSIFIER_UNKNOWN_CLASS \
+    (UC_M4_CLASSIFIER_NARROW_CLASSES + UC_M4_CLASSIFIER_WIDE_CLASSES)
+#define UC_M4_CLASSIFIER_CLASS_COUNT (UC_M4_CLASSIFIER_UNKNOWN_CLASS + 1)
 
 // Host diagnostics ABI, shared with camera_native Machine.exit_counters.
 enum uc_embedder_exit_counter {
@@ -312,7 +323,10 @@ enum uc_embedder_exit_counter {
     UC_COUNT_TRANSLATION_REPEATED_LOOKUP_KEY_NS,
     UC_COUNT_TRANSLATION_UNTRACKED_LOOKUP_KEY,
     UC_COUNT_TRANSLATION_UNTRACKED_LOOKUP_KEY_NS,
-    UC_EXIT_COUNTER_COUNT = UC_COUNT_TRANSLATION_UNTRACKED_LOOKUP_KEY_NS + 1
+    // Feature bit 28 appends callback and translated-TB instruction opportunity
+    // counts for every M4 classifier bin, in that order per bin.
+    UC_COUNT_M4_CLASSIFIER_FIRST = UC_COUNT_TRANSLATION_UNTRACKED_LOOKUP_KEY_NS + 1,
+    UC_EXIT_COUNTER_COUNT = UC_COUNT_M4_CLASSIFIER_FIRST + 2 * UC_M4_CLASSIFIER_CLASS_COUNT
 };
 
 /* Embedder-owned page flags, one conservative bit per observed host page.
@@ -417,6 +431,7 @@ struct uc_struct {
     uc_tcg_flush_tlb tcg_flush_tlb;
     void (*tcg_flush_physical_tlb)(struct uc_struct *, uint64_t, uint64_t);
     uc_invalidate_tb_t uc_invalidate_tb;
+    uc_invalidate_ram_range_t uc_invalidate_ram_range;
     uc_gen_tb_t uc_gen_tb;
     uc_tb_flush_t tb_flush;
     uc_add_inline_hook_t add_inline_hook;

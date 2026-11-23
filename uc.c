@@ -34,6 +34,7 @@
 _Thread_local unsigned int uc_jit_toggle_count;
 #endif
 #include "qemu/include/qemu/queue.h"
+#include "qemu/include/exec/ramlist.h"
 #include "qemu-common.h"
 #include "qemu/accel/tcg/translation-timing.h"
 
@@ -3457,6 +3458,85 @@ uc_err uc_embedder_request_restart(uc_engine *uc)
     return UC_ERR_OK;
 }
 
+/* Invalidate every RAMBlock view that shares bytes with a host backing write.
+ * This runs on the serialized engine thread and leaves any active-block
+ * boundary or restart request to the caller. */
+UNICORN_EXPORT
+uc_err uc_embedder_invalidate_backing(uc_engine *uc, const void *host,
+                                      size_t size)
+{
+    uc_err err = UC_ERR_OK;
+    uintptr_t host_begin, host_end;
+    RAMBlock *block;
+
+    if (!uc) {
+        return UC_ERR_ARG;
+    }
+    UC_INIT(uc);
+
+    if (size == 0) {
+        goto done;
+    }
+    if (!host) {
+        err = UC_ERR_ARG;
+        goto done;
+    }
+    host_begin = (uintptr_t)host;
+    if (size > UINTPTR_MAX - host_begin) {
+        err = UC_ERR_ARG;
+        goto done;
+    }
+    host_end = host_begin + size;
+    if (!uc->uc_invalidate_ram_range) {
+        err = UC_ERR_RESOURCE;
+        goto done;
+    }
+
+    RAMBLOCK_FOREACH(block) {
+        uintptr_t block_begin, block_offset, overlap_begin;
+        uintptr_t block_remaining, host_remaining, overlap_size;
+        ram_addr_t ram_begin, ram_end;
+
+        if (!block->host || block->used_length == 0) {
+            continue;
+        }
+        block_begin = (uintptr_t)block->host;
+        if (host_begin >= block_begin) {
+            block_offset = host_begin - block_begin;
+            if (block_offset >= block->used_length) {
+                continue;
+            }
+            overlap_begin = host_begin;
+        } else {
+            if (block_begin >= host_end) {
+                continue;
+            }
+            block_offset = 0;
+            overlap_begin = block_begin;
+        }
+
+        if (block->used_length > UINTPTR_MAX - block_begin ||
+            block_offset > UINTPTR_MAX - block->offset) {
+            err = UC_ERR_ARG;
+            goto done;
+        }
+        block_remaining = block->used_length - block_offset;
+        host_remaining = host_end - overlap_begin;
+        overlap_size = MIN(block_remaining, host_remaining);
+        ram_begin = block->offset + block_offset;
+        if (overlap_size > UINTPTR_MAX - ram_begin) {
+            err = UC_ERR_ARG;
+            goto done;
+        }
+        ram_end = ram_begin + overlap_size;
+        uc->uc_invalidate_ram_range(uc, ram_begin, ram_end);
+    }
+
+done:
+    restore_jit_state(uc);
+    return err;
+}
+
 // embedder: feature bits of these exports. 1: with a translation filter installed,
 // bit 31 of a block hook's size reports Thumb state. 2: uc_embedder_accounting and
 // filter decision bit 4 (block hook on every entry); bit 30 marks fast blocks.
@@ -3481,12 +3561,16 @@ uc_err uc_embedder_request_restart(uc_engine *uc)
 // 1 << 25: Thumb filter decision bit 8 executes the instruction and ends its TB.
 // 1 << 26: Thumb filter decision bit 16 proves an instruction safe in ITSTATE.
 // 1 << 27: opt-in translation timing classifies first, repeated lookup keys.
+// 1 << 28: guard-diagnostics-only Thumb classifier callback and translated-TB
+//          instruction-opportunity histograms.
+// 1 << 29: opt-in translation repeat details split generations and observed
+//          invalidation causes.
 UNICORN_EXPORT
 uint32_t uc_embedder_features(void)
 {
     return 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 |
            4096 | 1u << 20 | 1u << 21 | 1u << 22 | 1u << 23 | 1u << 24 |
-           1u << 25 | 1u << 26 | 1u << 27;
+           1u << 25 | 1u << 26 | 1u << 27 | 1u << 28 | 1u << 29;
 }
 
 UNICORN_EXPORT
@@ -3772,4 +3856,18 @@ UNICORN_EXPORT
 const uint64_t *uc_embedder_exit_counters(uc_engine *uc)
 {
     return uc->embedder_exit_counters;
+}
+
+// Opt-in translation repeat diagnostics. See uc_embedder_features bit 29.
+// The fixed array is (count, elapsed_ns) pairs for: repeats across a global
+// TB flush, repeats in the same generation, same-generation repeats with an
+// unknown invalidation cause, then same-generation repeats attributed to
+// restore_nocache, exec_nocache, io_recompile, guest_store, exit_address,
+// embedder, watchpoint, restart, and physical_write. Across-flush repeats are
+// correlated with a flush, not attributed to it as their cause.
+UNICORN_EXPORT
+const uint64_t *uc_embedder_translation_repeat_counters(uc_engine *uc,
+                                                         size_t *count)
+{
+    return uc_translation_timing_repeat_counters(uc, count);
 }

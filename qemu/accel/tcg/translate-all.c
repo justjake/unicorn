@@ -1289,6 +1289,15 @@ static void uc_invalidate_tb(struct uc_struct *uc, uint64_t start_addr, size_t l
     uc_invalidate_tb_cause(uc, start_addr, len, UC_COUNT_INVALIDATE_EMBEDDER);
 }
 
+static void uc_invalidate_ram_range(struct uc_struct *uc, ram_addr_t start,
+                                    ram_addr_t end)
+{
+    if (start < end) {
+        tb_invalidate_phys_range(uc, start, end,
+                                 UC_COUNT_INVALIDATE_PHYSICAL_WRITE);
+    }
+}
+
 void uc_invalidate_exit_tb(struct uc_struct *uc, uint64_t addr)
 {
     uc_invalidate_tb_cause(uc, addr, 1, UC_COUNT_INVALIDATE_EXIT_ADDRESS);
@@ -1373,6 +1382,7 @@ void tcg_exec_init(struct uc_struct *uc, uint32_t tb_size)
     uc->l1_map = g_malloc0(sizeof(void *) * V_L1_MAX_SIZE);
     /* Invalidate / Cache TBs */
     uc->uc_invalidate_tb = uc_invalidate_tb;
+    uc->uc_invalidate_ram_range = uc_invalidate_ram_range;
     uc->uc_gen_tb = uc_gen_tb;
     uc->tb_flush = uc_tb_flush;
     uc->embedder_code_stale_restart = embedder_code_stale_restart;
@@ -1528,6 +1538,7 @@ static void do_tb_flush(CPUState *cpu, run_on_cpu_data tb_flush_count)
     tcg_region_reset_all(cpu->uc->tcg_ctx);
     uc_embedder_chain_flush(cpu->uc);
     cpu->uc->embedder_exit_counters[UC_COUNT_TRANSLATION_FLUSHES]++;
+    uc_translation_timing_global_flush(cpu->uc);
     /* XXX: flush processor icache at this point if cache flush is
        expensive */
     cpu->uc->tcg_ctx->tb_ctx.tb_flush_count = cpu->uc->tcg_ctx->tb_ctx.tb_flush_count + 1;
@@ -1632,6 +1643,9 @@ static inline void tb_jmp_unlink(TranslationBlock *dest)
     dest->jmp_list_head = (uintptr_t)NULL;
 }
 
+static void uc_embedder_translation_timing_key(TranslationBlock *tb,
+                                               UcTranslationTimingKey *key);
+
 /*
  * In user-mode, call with mmap_lock held.
  * In !user-mode, if @rm_from_page_list is set, call with the TB's pages'
@@ -1643,11 +1657,17 @@ static void do_tb_phys_invalidate(TCGContext *tcg_ctx, TranslationBlock *tb,
 {
     CPUState *cpu = tcg_ctx->uc->cpu;
     struct uc_struct *uc = tcg_ctx->uc;
+    UcTranslationTimingKey timing_key;
+    bool timing_key_valid = uc->embedder_guard_diagnostics &&
+                            uc->embedder_translation_timing != NULL;
     PageDesc *p;
     uint32_t h;
     tb_page_addr_t phys_pc;
     bool code_gen_locked;
 
+    if (timing_key_valid) {
+        uc_embedder_translation_timing_key(tb, &timing_key);
+    }
     uc->embedder_exit_counters[UC_COUNT_TRANSLATION_INVALIDATIONS]++;
     uc->embedder_exit_counters[cause]++;
     /* Cached indirect targets may name this translation. */
@@ -1670,6 +1690,9 @@ static void do_tb_phys_invalidate(TCGContext *tcg_ctx, TranslationBlock *tb,
         !qht_remove(&tcg_ctx->tb_ctx.htable, tb, h)) {
         tb_exec_change(uc, code_gen_locked);
         return;
+    }
+    if (timing_key_valid) {
+        uc_translation_timing_note_invalidation(uc, &timing_key, cause);
     }
 
     /* remove the TB from the page list */
@@ -1854,6 +1877,22 @@ tb_link_page(struct uc_struct *uc, TranslationBlock *tb, tb_page_addr_t phys_pc,
     return tb;
 }
 
+static void uc_embedder_translation_timing_key(TranslationBlock *tb,
+                                               UcTranslationTimingKey *key)
+{
+    key->pc = (uint64_t)tb->pc;
+    key->physical_page1 = tb->page_addr[0] == (tb_page_addr_t)-1
+                              ? UINT64_MAX
+                              : (uint64_t)tb->page_addr[0];
+    key->physical_page2 = tb->page_addr[1] == (tb_page_addr_t)-1
+                              ? UINT64_MAX
+                              : (uint64_t)tb->page_addr[1];
+    key->cs_base = (uint64_t)tb->cs_base;
+    key->flags = tb->flags;
+    key->cflags = tb_cflags(tb) & (CF_HASH_MASK | CF_INVALID);
+    key->trace_vcpu_dstate = tb->trace_vcpu_dstate;
+}
+
 /* Called with mmap_lock held for user mode emulation.  */
 static void uc_embedder_translation_timing_complete(
     CPUState *cpu, bool enabled, int64_t start_ns, TranslationBlock *tb)
@@ -1870,17 +1909,7 @@ static void uc_embedder_translation_timing_complete(
     // excluded from the recorded tb_gen_code elapsed time.
     end_ns = qemu_clock_get_ns(QEMU_CLOCK_HOST);
     elapsed_ns = end_ns >= start_ns ? (uint64_t)(end_ns - start_ns) : 0;
-    key.pc = (uint64_t)tb->pc;
-    key.physical_page1 = tb->page_addr[0] == (tb_page_addr_t)-1
-                             ? UINT64_MAX
-                             : (uint64_t)tb->page_addr[0];
-    key.physical_page2 = tb->page_addr[1] == (tb_page_addr_t)-1
-                             ? UINT64_MAX
-                             : (uint64_t)tb->page_addr[1];
-    key.cs_base = (uint64_t)tb->cs_base;
-    key.flags = tb->flags;
-    key.cflags = tb_cflags(tb) & (CF_HASH_MASK | CF_INVALID);
-    key.trace_vcpu_dstate = tb->trace_vcpu_dstate;
+    uc_embedder_translation_timing_key(tb, &key);
     uc_translation_timing_record(cpu->uc, &key, elapsed_ns);
 }
 
@@ -2221,23 +2250,29 @@ void tb_invalidate_phys_range(struct uc_struct *uc, ram_addr_t start, ram_addr_t
                               enum uc_embedder_exit_counter cause)
 {
     struct page_collection *pages;
-    tb_page_addr_t next;
+    ram_addr_t page_size;
 
     assert_memory_lock();
+    /* Preserve the no-op behavior for empty or end-wrapped ranges. */
+    if (end <= start) {
+        return;
+    }
+    page_size = (ram_addr_t)TARGET_PAGE_SIZE;
 
     pages = page_collection_lock(uc, start, end);
-    for (next = (start & TARGET_PAGE_MASK) + TARGET_PAGE_SIZE;
-         //start < end; Unicorn: Fix possible wrap around
-         (intptr_t)(end - start) > 0;
-         start = next, next += TARGET_PAGE_SIZE) {
+    while (start < end) {
+        const ram_addr_t page_offset = start & (page_size - 1);
+        const ram_addr_t page_remaining = page_size - page_offset;
+        const ram_addr_t range_remaining = end - start;
+        const ram_addr_t amount = MIN(page_remaining, range_remaining);
+        const tb_page_addr_t bound = start + amount;
         PageDesc *pd = page_find(uc, start >> TARGET_PAGE_BITS);
-        tb_page_addr_t bound = MIN(next, end);
 
-        if (pd == NULL) {
-            continue;
+        if (pd != NULL) {
+            tb_invalidate_phys_page_range__locked(uc, pages, pd, start, bound, 0,
+                                                  cause);
         }
-        tb_invalidate_phys_page_range__locked(uc, pages, pd, start, bound, 0,
-                                              cause);
+        start = bound;
     }
     page_collection_unlock(pages);
 }
