@@ -3481,6 +3481,8 @@ uc_err uc_embedder_request_restart(uc_engine *uc)
 // 1 << 25: Thumb filter decision bit 8 executes the instruction and ends its TB.
 // 1 << 26: Thumb filter decision bit 16 proves an instruction safe in ITSTATE.
 // 1 << 27: opt-in translation timing classifies first, repeated lookup keys.
+// 1 << 28: guard-diagnostics-only Thumb classifier callback and translated-TB
+//          instruction-opportunity histograms.
 // 1 << 29: opt-in translation repeat details split generations and observed
 //          invalidation causes.
 UNICORN_EXPORT
@@ -3488,7 +3490,7 @@ uint32_t uc_embedder_features(void)
 {
     return 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 |
            4096 | 1u << 20 | 1u << 21 | 1u << 22 | 1u << 23 | 1u << 24 |
-           1u << 25 | 1u << 26 | 1u << 27 | 1u << 29;
+           1u << 25 | 1u << 26 | 1u << 27 | 1u << 28 | 1u << 29;
 }
 
 UNICORN_EXPORT
