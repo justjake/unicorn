@@ -11375,9 +11375,11 @@ static void arm_tr_tb_start(DisasContextBase *dcbase, CPUState *cpu)
     TCGContext *tcg_ctx = dc->uc->tcg_ctx;
 
     // ITSTATE affects instruction conditions and is published per instruction
-    // by code hooks. Keep blocks that enter with active ITSTATE on the helper
-    // path, where the embedder can observe those instruction boundaries.
-    if (dc->thumb && (dc->condexec_mask || dc->condexec_cond)) {
+    // by code hooks. Mode 4 may admit a block only when each IT instruction and
+    // every member carries the explicit pure-IT-safe filter bit; all other
+    // modes retain helper accounting for active ITSTATE.
+    if (dc->thumb && (dc->condexec_mask || dc->condexec_cond) &&
+        dc->uc->embedder_acct.enabled != 4) {
         UC_EMBEDDER_MARK_TB_SLOW(dc->uc, UC_EMBEDDER_TB_SLOW_OTHER);
     }
 
@@ -11651,9 +11653,11 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
             UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_CLASSIFIER);
         }
     }
-    if (active_it) {
+    if (active_it &&
+        (uc->embedder_acct.enabled != 4 || !(embedder_decision & 16))) {
         // The translation filter receives the instruction word but not the
-        // incoming ITSTATE. Active IT instructions therefore remain observed.
+        // incoming ITSTATE. Mode 4 relies on its separate explicit bit for
+        // instructions proven safe while conditionally executed.
         UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_OTHER);
     }
 
@@ -11696,7 +11700,8 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         disas_thumb2_insn(dc, insn);
     }
 
-    if (dc->condexec_mask || dc->condexec_cond) {
+    if ((dc->condexec_mask || dc->condexec_cond) &&
+        (uc->embedder_acct.enabled != 4 || !(embedder_decision & 16))) {
         // Includes an IT instruction, which establishes state in the decoder.
         UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_OTHER);
     }
