@@ -1940,7 +1940,7 @@ load_helper(CPUArchState *env, target_ulong addr, TCGMemOpIdx oi,
             ((hp ? embedder_device_access_page(hp, paddr)
                  : embedder_device_access(uc->hook[UC_HOOK_MEM_READ_IDX].head, paddr)) ||
              embedder_device_access(uc->hook[UC_HOOK_MEM_READ_AFTER_IDX].head, paddr))) {
-            embedder_restart_insn(uc->cpu, retaddr, true);
+            embedder_restart_insn(uc->cpu, retaddr, true, false);
         }
         // this is date reading
         for (;;) {
@@ -2485,13 +2485,14 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
     mr = uc->memory_mapping(uc, paddr);
 
     if (!uc->size_recur_mem) { // disabling write callback if in recursive call
+        bool remember_watched_store = false;
         struct embedder_hook_page *hp = embedder_hook_page(uc, 1, paddr);
         struct list_item *hcur = hp ? NULL : uc->hook[UC_HOOK_MEM_WRITE_IDX].head;
         int hi = 0;
         if (uc->embedder_insn_filter &&
             (hp ? embedder_device_access_page(hp, paddr)
                 : embedder_device_access(uc->hook[UC_HOOK_MEM_WRITE_IDX].head, paddr))) {
-            embedder_restart_insn(uc->cpu, retaddr, true);
+            embedder_restart_insn(uc->cpu, retaddr, true, false);
         }
         // Unicorn: callback on memory write
         for (;;) {
@@ -2515,7 +2516,16 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
                 cpu_restore_state(uc->cpu, retaddr, false);
                 synced = true;
             }
+            bool restart_requested = uc->embedder_restart_request;
             JIT_CALLBACK_GUARD(((uc_cb_hookmem_t)hook->callback)(uc, UC_MEM_WRITE, paddr, size, val, hook->user_data));
+            // Only an explicit retry requested by a watched M-profile mode-4
+            // write hook learns this PC. Other hooks and accounting modes keep
+            // their existing one-shot restart behavior.
+            if (!restart_requested && uc->embedder_restart_request &&
+                uc->embedder_acct.enabled == 4 && uc->embedder_insn_filter &&
+                hook->embedder_watched) {
+                remember_watched_store = true;
+            }
             // the last callback may already asked to stop emulation
             if (uc->stop_request)
                 break;
@@ -2525,7 +2535,7 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
         // is redone in a block of its own so execution can stop right after
         if (uc->embedder_restart_request) {
             uc->embedder_restart_request = false;
-            embedder_restart_insn(uc->cpu, retaddr, false);
+            embedder_restart_insn(uc->cpu, retaddr, false, remember_watched_store);
         }
         /* embedder: write hooks may flush (and resize) the TLB, which upstream
            does not check here: the store would use a flushed or freed

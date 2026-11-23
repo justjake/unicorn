@@ -384,6 +384,15 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
             db->is_jmp = DISAS_TOO_MANY;
             break;
         }
+        if (db->num_insns > 0 && uc->embedder_insn_filter &&
+            uc->embedder_acct.enabled == 4 &&
+            uc->embedder_tb_thumb &&
+            uc->embedder_watched_store_pcs &&
+            g_hash_table_lookup(uc->embedder_watched_store_pcs,
+                                (gconstpointer)(uintptr_t)embedder_pc)) {
+            db->is_jmp = DISAS_TOO_MANY;
+            break;
+        }
         uc->embedder_insn_decision = 1;
 
         db->num_insns++;
@@ -441,7 +450,11 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
         // ends its block
         if (uc->embedder_insn_filter && ((uc->embedder_insn_decision & 3) >= 2 ||
             (uc->embedder_io_pcs &&
-             g_hash_table_lookup(uc->embedder_io_pcs, (gconstpointer)(uintptr_t)embedder_pc)))) {
+             g_hash_table_lookup(uc->embedder_io_pcs, (gconstpointer)(uintptr_t)embedder_pc)) ||
+            (uc->embedder_acct.enabled == 4 && uc->embedder_tb_thumb &&
+             uc->embedder_watched_store_pcs &&
+             g_hash_table_lookup(uc->embedder_watched_store_pcs,
+                                 (gconstpointer)(uintptr_t)embedder_pc)))) {
             db->is_jmp = DISAS_TOO_MANY;
             break;
         }

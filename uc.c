@@ -546,6 +546,9 @@ uc_err uc_close(uc_engine *uc)
         g_free(uc->embedder_chain_chunks);
         uc->embedder_chain_chunks = next;
     }
+    if (uc->embedder_watched_store_pcs) {
+        g_hash_table_destroy(uc->embedder_watched_store_pcs);
+    }
 
     // Cleanup internally.
     if (uc->release) {

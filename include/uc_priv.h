@@ -288,6 +288,9 @@ enum uc_embedder_exit_counter {
     UC_COUNT_INVALIDATE_EXIT_ADDRESS, UC_COUNT_INVALIDATE_EMBEDDER,
     UC_COUNT_INVALIDATE_WATCHPOINT, UC_COUNT_INVALIDATE_RESTART,
     UC_COUNT_INVALIDATE_PHYSICAL_WRITE,
+    // Appended diagnostic counters, gated by uc_embedder_features bit 8192.
+    UC_COUNT_WATCHED_STORE_REMEMBERED, UC_COUNT_WATCHED_STORE_TERMINAL_REQUESTS,
+    UC_COUNT_WATCHED_STORE_CAP,
     UC_EXIT_COUNTER_COUNT
 };
 
@@ -540,6 +543,8 @@ struct uc_struct {
     void *embedder_filter_user;
     int embedder_insn_decision;   // filter result for the instruction being translated
     GHashTable *embedder_io_pcs;  // guest PCs of instructions ending their block
+    GHashTable *embedder_watched_store_pcs; // learned Thumb mode-4 store boundaries
+    uint32_t embedder_watched_store_pc_count;
     uint32_t embedder_retry_limit; // block hook: retranslate this block this short
     bool embedder_restart_request; // write hook: restart the storing instruction
     void (*embedder_code_stale_restart)(struct uc_struct *uc);

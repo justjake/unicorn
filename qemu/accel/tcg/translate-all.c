@@ -2323,7 +2323,8 @@ static void count_restart_tail(CPUState *cpu, TranslationBlock *tb,
    instruction executing at retaddr as a block of its own. remember: also end
    later translations at it and retranslate the block it was found in. The
    embedder's embedder_restart callback learns its PC first. */
-void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember)
+void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember,
+                           bool remember_watched_store)
 {
     struct uc_struct *uc = cpu->uc;
     TCGContext *tcg_ctx = uc->tcg_ctx;
@@ -2348,7 +2349,13 @@ void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember)
             index = embedder_insn_index(tb, retaddr);
         }
     }
-    if (index < 0 || index == tb->icount - 1) {
+    if (index < 0) {
+        return;
+    }
+    if (index == tb->icount - 1) {
+        if (remember_watched_store) {
+            uc->embedder_exit_counters[UC_COUNT_WATCHED_STORE_TERMINAL_REQUESTS]++;
+        }
         return;
     }
     count_restart_tail(cpu, tb, retaddr);
@@ -2360,6 +2367,30 @@ void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember)
         }
         g_hash_table_insert(uc->embedder_io_pcs, (gpointer)(uintptr_t)pc, (gpointer)1);
         tb_phys_invalidate(tcg_ctx, tb, -1, UC_COUNT_INVALIDATE_RESTART);
+    }
+    if (remember_watched_store && uc->embedder_acct.enabled == 4) {
+        bool learned = uc->embedder_watched_store_pcs &&
+            g_hash_table_lookup(uc->embedder_watched_store_pcs,
+                                (gconstpointer)(uintptr_t)pc);
+        if (!learned) {
+            if (uc->embedder_watched_store_pc_count >= 4096) {
+                uc->embedder_exit_counters[UC_COUNT_WATCHED_STORE_CAP]++;
+            } else {
+                if (!uc->embedder_watched_store_pcs) {
+                    uc->embedder_watched_store_pcs = g_hash_table_new(NULL, NULL);
+                }
+                g_hash_table_insert(uc->embedder_watched_store_pcs,
+                                    (gpointer)(uintptr_t)pc, (gpointer)1);
+                uc->embedder_watched_store_pc_count++;
+                uc->embedder_exit_counters[UC_COUNT_WATCHED_STORE_REMEMBERED]++;
+                learned = true;
+            }
+        }
+        if (learned) {
+            // Also retire an older overlapping TB if this PC was learned by
+            // another translation path or execution context.
+            tb_phys_invalidate(tcg_ctx, tb, -1, UC_COUNT_INVALIDATE_RESTART);
+        }
     }
     if (uc->embedder_restart) {
         uc->embedder_restart(uc->embedder_filter_user, pc);
