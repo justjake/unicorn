@@ -306,7 +306,7 @@ enum uc_embedder_exit_counter {
                                      UC_EMBEDDER_GUARD_SAMPLE_CAP * 3,
     // Successful generated TBs are classified; translations minus these
     // counts includes calls that abort before completion.
-    UC_COUNT_TRANSLATION_FIRST_LOOKUP_KEY,
+    UC_COUNT_TRANSLATION_FIRST_LOOKUP_KEY = UC_COUNT_GUARD_SAMPLE_RING_END,
     UC_COUNT_TRANSLATION_FIRST_LOOKUP_KEY_NS,
     UC_COUNT_TRANSLATION_REPEATED_LOOKUP_KEY,
     UC_COUNT_TRANSLATION_REPEATED_LOOKUP_KEY_NS,
