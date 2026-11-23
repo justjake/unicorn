@@ -1215,6 +1215,7 @@ set(UNICORN_COMMON_SRCS
     qemu/util/qht.c
     qemu/util/pagesize.c
     qemu/util/cacheinfo.c
+    qemu/accel/tcg/translation-timing.c
 
     qemu/crypto/aes.c
 )

@@ -304,7 +304,15 @@ enum uc_embedder_exit_counter {
     UC_COUNT_GUARD_SAMPLE_RING,
     UC_COUNT_GUARD_SAMPLE_RING_END = UC_COUNT_GUARD_SAMPLE_RING +
                                      UC_EMBEDDER_GUARD_SAMPLE_CAP * 3,
-    UC_EXIT_COUNTER_COUNT = UC_COUNT_GUARD_SAMPLE_RING_END
+    // Successful generated TBs are classified; translations minus these
+    // counts includes calls that abort before completion.
+    UC_COUNT_TRANSLATION_FIRST_LOOKUP_KEY,
+    UC_COUNT_TRANSLATION_FIRST_LOOKUP_KEY_NS,
+    UC_COUNT_TRANSLATION_REPEATED_LOOKUP_KEY,
+    UC_COUNT_TRANSLATION_REPEATED_LOOKUP_KEY_NS,
+    UC_COUNT_TRANSLATION_UNTRACKED_LOOKUP_KEY,
+    UC_COUNT_TRANSLATION_UNTRACKED_LOOKUP_KEY_NS,
+    UC_EXIT_COUNTER_COUNT = UC_COUNT_TRANSLATION_UNTRACKED_LOOKUP_KEY_NS + 1
 };
 
 /* Embedder-owned page flags, one conservative bit per observed host page.
@@ -672,6 +680,7 @@ struct uc_struct {
     struct uc_embedder_chain_chunk *embedder_chain_chunks;
     struct uc_embedder_chain_chunk *embedder_chain_chunk;
     uint32_t embedder_chain_used;
+    struct UcTranslationTiming *embedder_translation_timing;
 };
 
 // Metadata stub for the variable-size cpu context used with uc_context_*()

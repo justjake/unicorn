@@ -35,6 +35,7 @@ _Thread_local unsigned int uc_jit_toggle_count;
 #endif
 #include "qemu/include/qemu/queue.h"
 #include "qemu-common.h"
+#include "qemu/accel/tcg/translation-timing.h"
 
 static void embedder_flush_tlb_flags(struct uc_struct *uc);
 
@@ -534,6 +535,9 @@ uc_err uc_close(uc_engine *uc)
 
     // Flush all translation buffers or we leak memory allocated by MMU
     uc->tb_flush(uc);
+
+    uc_translation_timing_free(uc->embedder_translation_timing);
+    uc->embedder_translation_timing = NULL;
 
     g_free(uc->embedder_watch);
     g_free(uc->embedder_flat[0].h);
@@ -3595,6 +3599,13 @@ UNICORN_EXPORT
 uc_err uc_embedder_set_guard_diagnostics(uc_engine *uc, bool enabled)
 {
     UC_INIT(uc);
+    if (enabled && !uc->embedder_translation_timing) {
+        uc->embedder_translation_timing = uc_translation_timing_new();
+        if (!uc->embedder_translation_timing) {
+            restore_jit_state(uc);
+            return UC_ERR_NOMEM;
+        }
+    }
     if (uc->embedder_guard_diagnostics != enabled) {
         uc->embedder_guard_diagnostics = enabled;
         uc->cpu->cflags_next_tb = -1;
