@@ -1440,6 +1440,7 @@
 #define helper_uxtb16 helper_uxtb16_aarch64
 #define helper_sdiv helper_sdiv_aarch64
 #define helper_udiv helper_udiv_aarch64
+#define helper_arm_embedder_uidiv_core helper_arm_embedder_uidiv_core_aarch64
 #define helper_rbit helper_rbit_aarch64
 #define arm_phys_excp_target_el arm_phys_excp_target_el_aarch64
 #define aarch64_sync_32_to_64 aarch64_sync_32_to_64_aarch64

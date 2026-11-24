@@ -291,17 +291,14 @@ struct CPUState {
     struct TranslationBlock *tb_jmp_cache[TB_JMP_CACHE_SIZE];
 
     /* Embedder: recently resolved indirect targets, keyed by the same
-     * (pc, cs_base, flags) the block lookup compares. */
-#define UC_EMBEDDER_TARGET_CACHE_SIZE 1024
-    struct {
+     * (pc, flags, cf_mask) the block lookup compares (when cs_base == 0).
+     * epoch == 0 marks an invalid entry; uc->embedder_tb_epoch starts at 1. */
+#define UC_EMBEDDER_TARGET_CACHE_SIZE 4096
+    struct uc_embedder_target_entry {
         uint64_t pc;
-        uint64_t cs_base;
         uint64_t code;
         uint64_t epoch;
-        uint32_t flags;
-        uint32_t cf_mask;
-        uint32_t valid;
-        uint32_t pad;
+        uint64_t flags_cf;
     } embedder_target_cache[UC_EMBEDDER_TARGET_CACHE_SIZE];
 
     QTAILQ_ENTRY(CPUState) node;
@@ -344,6 +341,12 @@ struct CPUState {
 #define CPU_CLASS(class) ((CPUClass *)class)
 #define CPU_GET_CLASS(obj) (((CPUState *)obj)->cc)
 
+static inline unsigned uc_embedder_target_slot(uint64_t pc)
+{
+    return (unsigned)(((pc >> 2) ^ (pc >> 12)) &
+                      (UC_EMBEDDER_TARGET_CACHE_SIZE - 1));
+}
+
 static inline void cpu_tb_jmp_cache_clear(CPUState *cpu)
 {
     unsigned int i;
@@ -352,7 +355,7 @@ static inline void cpu_tb_jmp_cache_clear(CPUState *cpu)
         cpu->tb_jmp_cache[i] = NULL;
     }
     for (i = 0; i < UC_EMBEDDER_TARGET_CACHE_SIZE; i++) {
-        cpu->embedder_target_cache[i].valid = 0;
+        cpu->embedder_target_cache[i].epoch = 0;
     }
 }
 

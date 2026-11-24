@@ -346,8 +346,17 @@ void tcg_tb_insert(TCGContext *tcg_ctx, TranslationBlock *tb)
 
 void tcg_tb_remove(TCGContext *tcg_ctx, TranslationBlock *tb)
 {
-    if (tcg_ctx->tb_lookup_last == tb) {
-        tcg_ctx->tb_lookup_last = NULL;
+    uintptr_t start = (uintptr_t)tb->tc.ptr >> TCG_TB_LOOKUP_CACHE_SHIFT;
+    uintptr_t end = ((uintptr_t)tb->tc.ptr + tb->tc.size) >> TCG_TB_LOOKUP_CACHE_SHIFT;
+    if (end - start >= TCG_TB_LOOKUP_CACHE_SIZE) {
+        memset(tcg_ctx->tb_lookup_cache, 0, sizeof(tcg_ctx->tb_lookup_cache));
+    } else {
+        for (uintptr_t s = start; s <= end; s++) {
+            unsigned idx = (unsigned)(s & (TCG_TB_LOOKUP_CACHE_SIZE - 1));
+            if (tcg_ctx->tb_lookup_cache[idx] == tb) {
+                tcg_ctx->tb_lookup_cache[idx] = NULL;
+            }
+        }
     }
     for (int i = 0; i < 512; i++) {
         if (tcg_ctx->embedder_sites[i].tb == tb) {
@@ -365,14 +374,16 @@ void tcg_tb_remove(TCGContext *tcg_ctx, TranslationBlock *tb)
  */
 TranslationBlock *tcg_tb_lookup(TCGContext *tcg_ctx, uintptr_t tc_ptr)
 {
-    TranslationBlock *tb = tcg_ctx->tb_lookup_last;
+    unsigned idx = (unsigned)((tc_ptr >> TCG_TB_LOOKUP_CACHE_SHIFT) &
+                              (TCG_TB_LOOKUP_CACHE_SIZE - 1));
+    TranslationBlock *tb = tcg_ctx->tb_lookup_cache[idx];
 
     if (tb && tc_ptr - (uintptr_t)tb->tc.ptr < tb->tc.size) {
         return tb;
     }
     struct tb_tc s = { .ptr = (void *)tc_ptr };
     tb = g_tree_lookup(tcg_ctx->tree, &s);
-    tcg_ctx->tb_lookup_last = tb;
+    tcg_ctx->tb_lookup_cache[idx] = tb;
 
     return tb;
 }
@@ -392,7 +403,7 @@ size_t tcg_nb_tbs(TCGContext *tcg_ctx)
 
 static void tcg_region_tree_reset_all(TCGContext *tcg_ctx)
 {
-    tcg_ctx->tb_lookup_last = NULL;
+    memset(tcg_ctx->tb_lookup_cache, 0, sizeof(tcg_ctx->tb_lookup_cache));
     memset(tcg_ctx->embedder_sites, 0, sizeof(tcg_ctx->embedder_sites));
     g_tree_ref(tcg_ctx->tree);
     g_tree_destroy(tcg_ctx->tree);
@@ -557,7 +568,7 @@ void tcg_region_init(TCGContext *tcg_ctx)
     }
 
     tcg_ctx->tree = g_tree_new(tb_tc_cmp);
-    tcg_ctx->tb_lookup_last = NULL;
+    memset(tcg_ctx->tb_lookup_cache, 0, sizeof(tcg_ctx->tb_lookup_cache));
     memset(tcg_ctx->embedder_sites, 0, sizeof(tcg_ctx->embedder_sites));
     // Unicorn: Though this code is taken from CONFIG_USER_ONLY, it is crucial or
     //          tcg_ctx->region.current is 0 and we will miss a tb_flush when the

@@ -166,28 +166,29 @@ void *HELPER(lookup_tb_ptr)(CPUArchState *env)
     }
     cf_mask = (curr_cflags(cpu) & ~CF_CLUSTER_MASK) |
               ((uint32_t)cpu->cluster_index << CF_CLUSTER_SHIFT);
-    slot = (unsigned)((pc >> 2) & (UC_EMBEDDER_TARGET_CACHE_SIZE - 1));
-    if (likely(cpu->embedder_target_cache[slot].valid &&
-               cpu->embedder_target_cache[slot].epoch == epoch &&
-               cpu->embedder_target_cache[slot].pc == pc &&
-               cpu->embedder_target_cache[slot].cs_base == cs_base &&
-               cpu->embedder_target_cache[slot].flags == flags &&
-               cpu->embedder_target_cache[slot].cf_mask == cf_mask)) {
-        return (void *)(uintptr_t)cpu->embedder_target_cache[slot].code;
+    uint64_t flags_cf = ((uint64_t)cf_mask << 32) | (uint64_t)flags;
+    if (likely(cs_base == 0)) {
+        slot = uc_embedder_target_slot(pc);
+        if (likely(cpu->embedder_target_cache[slot].epoch == epoch &&
+                   cpu->embedder_target_cache[slot].pc == pc &&
+                   cpu->embedder_target_cache[slot].flags_cf == flags_cf)) {
+            return (void *)(uintptr_t)cpu->embedder_target_cache[slot].code;
+        }
     }
 
     tb = tb_lookup__state(cpu, pc, cs_base, flags, cf_mask);
     if (tb == NULL) {
-        cpu->embedder_target_cache[slot].valid = 0;
+        if (likely(cs_base == 0)) {
+            cpu->embedder_target_cache[slot].epoch = 0;
+        }
         return uc->tcg_ctx->code_gen_epilogue;
     }
-    cpu->embedder_target_cache[slot].pc = pc;
-    cpu->embedder_target_cache[slot].cs_base = cs_base;
-    cpu->embedder_target_cache[slot].flags = flags;
-    cpu->embedder_target_cache[slot].cf_mask = cf_mask;
-    cpu->embedder_target_cache[slot].code = (uint64_t)(uintptr_t)tb->tc.ptr;
-    cpu->embedder_target_cache[slot].epoch = epoch;
-    cpu->embedder_target_cache[slot].valid = 1;
+    if (likely(cs_base == 0)) {
+        cpu->embedder_target_cache[slot].pc = pc;
+        cpu->embedder_target_cache[slot].flags_cf = flags_cf;
+        cpu->embedder_target_cache[slot].code = (uint64_t)(uintptr_t)tb->tc.ptr;
+        cpu->embedder_target_cache[slot].epoch = epoch;
+    }
     return tb->tc.ptr;
 }
 
