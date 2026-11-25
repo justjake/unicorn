@@ -1368,6 +1368,7 @@
 #define helper_uxtb16 helper_uxtb16_arm
 #define helper_sdiv helper_sdiv_arm
 #define helper_udiv helper_udiv_arm
+#define helper_arm_embedder_uidiv_core helper_arm_embedder_uidiv_core_arm
 #define helper_rbit helper_rbit_arm
 #define arm_phys_excp_target_el arm_phys_excp_target_el_arm
 #define aarch64_sync_32_to_64 aarch64_sync_32_to_64_arm

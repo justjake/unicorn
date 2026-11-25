@@ -431,15 +431,16 @@ static void tlb_flush_page_by_mmuidx_async_0(CPUState *cpu,
                                              uint16_t idxmap)
 {
     CPUArchState *env = cpu->env_ptr;
-    int mmu_idx;
+    uint16_t work = idxmap & env_tlb(env)->c.dirty;
 
-    for (mmu_idx = 0; mmu_idx < NB_MMU_MODES; mmu_idx++) {
-        if ((idxmap >> mmu_idx) & 1) {
-            tlb_flush_page_locked(env, mmu_idx, addr);
-        }
+    for (; work != 0; work &= work - 1) {
+        int mmu_idx = ctz32(work);
+        tlb_flush_page_locked(env, mmu_idx, addr);
     }
 
-    tb_flush_jmp_cache(cpu, addr);
+    if (!cpu->uc->embedder_keep_code_caches) {
+        tb_flush_jmp_cache(cpu, addr);
+    }
 }
 
 /**

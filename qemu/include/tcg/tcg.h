@@ -699,8 +699,10 @@ struct TCGContext {
     TCGv_ptr cpu_env;
     struct tcg_region_state region;
     GTree *tree;
-    /* The translation the last tcg_tb_lookup found; NULL once it leaves the tree. */
-    TranslationBlock *tb_lookup_last;
+    /* Direct-mapped cache of recent tcg_tb_lookup results; cleared on removal. */
+#define TCG_TB_LOOKUP_CACHE_SIZE 1024
+#define TCG_TB_LOOKUP_CACHE_SHIFT 6
+    TranslationBlock *tb_lookup_cache[TCG_TB_LOOKUP_CACHE_SIZE];
     /* embedder: instruction sites of translated code (see embedder_site). */
     struct embedder_site {
         uintptr_t ra;           /* host return address; 0 when empty */

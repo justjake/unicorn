@@ -334,6 +334,128 @@ static inline bool use_goto_tb(DisasContext *s, int n, uint64_t dest)
     return true;
 }
 
+static void gen_a64_goto_ptr(DisasContext *s, bool direct, uint64_t direct_dest)
+{
+    TCGContext *tcg_ctx = s->uc->tcg_ctx;
+#if TCG_TARGET_HAS_goto_ptr && TCG_TARGET_REG_BITS == 64 && !defined(CONFIG_TCG_INTERPRETER) && !defined(CONFIG_DEBUG_TCG)
+    uint32_t tb_flags = s->base.tb->flags;
+    if (likely(FIELD_EX32(tb_flags, TBFLAG_ANY, AARCH64_STATE) &&
+               !FIELD_EX32(tb_flags, TBFLAG_ANY, SS_ACTIVE) &&
+               !dc_isar_feature(aa64_bti, s))) {
+        struct uc_struct *uc = s->uc;
+        CPUState *cpu = uc->cpu;
+        uint32_t cf_mask = (curr_cflags(cpu) & ~CF_CLUSTER_MASK) |
+                           ((uint32_t)cpu->cluster_index << CF_CLUSTER_SHIFT);
+        uint64_t expected_flags_cf = ((uint64_t)cf_mask << 32) |
+                                     (uint64_t)tb_flags;
+        TCGLabel *miss = gen_new_label(tcg_ctx);
+
+        QEMU_BUILD_BUG_ON(sizeof(struct uc_embedder_target_entry) != 32);
+
+        if (direct) {
+            unsigned slot = uc_embedder_target_slot(direct_dest);
+            struct uc_embedder_target_entry *slot_ptr =
+                &cpu->embedder_target_cache[slot];
+            TCGv_ptr entry = tcg_const_ptr(tcg_ctx, slot_ptr);
+            TCGv_i64 diff = tcg_temp_new_i64(tcg_ctx);
+            TCGv_i64 tmp = tcg_temp_new_i64(tcg_ctx);
+            TCGv_ptr ucp = tcg_const_ptr(tcg_ctx, uc);
+            TCGv_i64 epoch = tcg_temp_new_i64(tcg_ctx);
+
+            tcg_gen_ld_i64(tcg_ctx, diff, entry,
+                           offsetof(struct uc_embedder_target_entry, pc));
+            tcg_gen_xori_i64(tcg_ctx, diff, diff, direct_dest);
+
+            tcg_gen_ld_i64(tcg_ctx, tmp, entry,
+                           offsetof(struct uc_embedder_target_entry, flags_cf));
+            tcg_gen_xori_i64(tcg_ctx, tmp, tmp, expected_flags_cf);
+            tcg_gen_or_i64(tcg_ctx, diff, diff, tmp);
+
+            tcg_gen_ld_i64(tcg_ctx, epoch, ucp,
+                           offsetof(struct uc_struct, embedder_tb_epoch));
+            tcg_gen_ld_i64(tcg_ctx, tmp, entry,
+                           offsetof(struct uc_embedder_target_entry, epoch));
+            tcg_gen_xor_i64(tcg_ctx, tmp, tmp, epoch);
+            tcg_gen_or_i64(tcg_ctx, diff, diff, tmp);
+
+            tcg_temp_free_i64(tcg_ctx, epoch);
+            tcg_temp_free_ptr(tcg_ctx, ucp);
+            tcg_temp_free_i64(tcg_ctx, tmp);
+            tcg_temp_free_ptr(tcg_ctx, entry);
+
+            tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, diff, 0, miss);
+            tcg_temp_free_i64(tcg_ctx, diff);
+
+            TCGv_ptr entry2 = tcg_const_ptr(tcg_ctx, slot_ptr);
+            TCGv_ptr code = tcg_temp_new_ptr(tcg_ctx);
+            tcg_gen_ld_ptr(tcg_ctx, code, entry2,
+                           offsetof(struct uc_embedder_target_entry, code));
+            tcg_temp_free_ptr(tcg_ctx, entry2);
+            tcg_gen_op1i(tcg_ctx, INDEX_op_goto_ptr,
+                         tcgv_ptr_arg(tcg_ctx, code));
+            tcg_temp_free_ptr(tcg_ctx, code);
+        } else {
+            TCGv_i64 s1 = tcg_temp_new_i64(tcg_ctx);
+            TCGv_i64 s2 = tcg_temp_new_i64(tcg_ctx);
+            TCGv_ptr offset = tcg_temp_new_ptr(tcg_ctx);
+            TCGv_ptr base = tcg_const_ptr(tcg_ctx, cpu->embedder_target_cache);
+            TCGv_ptr entry = tcg_temp_new_ptr(tcg_ctx);
+            TCGv_i64 diff = tcg_temp_new_i64(tcg_ctx);
+            TCGv_i64 tmp = tcg_temp_new_i64(tcg_ctx);
+            TCGv_ptr ucp = tcg_const_ptr(tcg_ctx, uc);
+            TCGv_i64 epoch = tcg_temp_new_i64(tcg_ctx);
+            TCGv_ptr code = tcg_temp_local_new_ptr(tcg_ctx);
+
+            tcg_gen_shri_i64(tcg_ctx, s1, tcg_ctx->cpu_pc_arm64, 2);
+            tcg_gen_shri_i64(tcg_ctx, s2, tcg_ctx->cpu_pc_arm64, 12);
+            tcg_gen_xor_i64(tcg_ctx, s1, s1, s2);
+            tcg_temp_free_i64(tcg_ctx, s2);
+            tcg_gen_andi_i64(tcg_ctx, s1, s1, UC_EMBEDDER_TARGET_CACHE_SIZE - 1);
+            tcg_gen_shli_i64(tcg_ctx, s1, s1, 5);
+            tcg_gen_trunc_i64_ptr(tcg_ctx, offset, s1);
+            tcg_temp_free_i64(tcg_ctx, s1);
+            tcg_gen_add_ptr(tcg_ctx, entry, base, offset);
+            tcg_temp_free_ptr(tcg_ctx, base);
+            tcg_temp_free_ptr(tcg_ctx, offset);
+
+            tcg_gen_ld_i64(tcg_ctx, diff, entry,
+                           offsetof(struct uc_embedder_target_entry, pc));
+            tcg_gen_xor_i64(tcg_ctx, diff, diff, tcg_ctx->cpu_pc_arm64);
+
+            tcg_gen_ld_i64(tcg_ctx, tmp, entry,
+                           offsetof(struct uc_embedder_target_entry, flags_cf));
+            tcg_gen_xori_i64(tcg_ctx, tmp, tmp, expected_flags_cf);
+            tcg_gen_or_i64(tcg_ctx, diff, diff, tmp);
+
+            tcg_gen_ld_i64(tcg_ctx, epoch, ucp,
+                           offsetof(struct uc_struct, embedder_tb_epoch));
+            tcg_gen_ld_i64(tcg_ctx, tmp, entry,
+                           offsetof(struct uc_embedder_target_entry, epoch));
+            tcg_gen_xor_i64(tcg_ctx, tmp, tmp, epoch);
+            tcg_gen_or_i64(tcg_ctx, diff, diff, tmp);
+
+            tcg_gen_ld_ptr(tcg_ctx, code, entry,
+                           offsetof(struct uc_embedder_target_entry, code));
+
+            tcg_temp_free_i64(tcg_ctx, epoch);
+            tcg_temp_free_ptr(tcg_ctx, ucp);
+            tcg_temp_free_i64(tcg_ctx, tmp);
+            tcg_temp_free_ptr(tcg_ctx, entry);
+
+            tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, diff, 0, miss);
+            tcg_temp_free_i64(tcg_ctx, diff);
+
+            tcg_gen_op1i(tcg_ctx, INDEX_op_goto_ptr,
+                         tcgv_ptr_arg(tcg_ctx, code));
+            tcg_temp_free_ptr(tcg_ctx, code);
+        }
+
+        gen_set_label(tcg_ctx, miss);
+    }
+#endif
+    tcg_gen_lookup_and_goto_ptr(tcg_ctx);
+}
+
 static inline void gen_goto_tb(DisasContext *s, int n, uint64_t dest)
 {
     TCGContext *tcg_ctx = s->uc->tcg_ctx;
@@ -352,7 +474,7 @@ static inline void gen_goto_tb(DisasContext *s, int n, uint64_t dest)
         } else if (s->base.singlestep_enabled) {
             gen_exception_internal(tcg_ctx, EXCP_DEBUG);
         } else {
-            tcg_gen_lookup_and_goto_ptr(tcg_ctx);
+            gen_a64_goto_ptr(s, true, dest);
             s->base.is_jmp = DISAS_NORETURN;
         }
     }
@@ -14810,7 +14932,7 @@ static void aarch64_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
             tcg_gen_exit_tb(tcg_ctx, NULL, 0);
             break;
         case DISAS_JUMP:
-            tcg_gen_lookup_and_goto_ptr(tcg_ctx);
+            gen_a64_goto_ptr(dc, false, 0);
             break;
         case DISAS_NORETURN:
         case DISAS_SWI:
