@@ -541,6 +541,9 @@ uc_err uc_close(uc_engine *uc)
     uc->embedder_translation_timing = NULL;
 
     g_free(uc->embedder_watch);
+    if (uc->embedder_high_watches) {
+        g_hash_table_destroy(uc->embedder_high_watches);
+    }
     g_free(uc->embedder_flat[0].h);
     g_free(uc->embedder_flat[1].h);
     if (uc->embedder_io_pcs) {
@@ -3328,94 +3331,95 @@ uc_err uc_embedder_set_hook_watched(uc_engine *uc, uc_hook hh, bool watched)
     return UC_ERR_OK;
 }
 
-// embedder: watch the 1 KiB physical pages covering [address, address + size).
+static guint embedder_watch_hash(gconstpointer key)
+{
+    uint64_t page = *(const uint64_t *)key;
+    return (guint)(page ^ (page >> 32));
+}
+
+static gboolean embedder_watch_equal(gconstpointer left, gconstpointer right)
+{
+    return *(const uint64_t *)left == *(const uint64_t *)right;
+}
+
+// Update the 1 KiB physical pages covering [address, address + size).
+static uc_err embedder_set_watch(uc_engine *uc, uint64_t address,
+                                 uint64_t size, bool watch)
+{
+    uint64_t page, end;
+    bool changed = false;
+
+    UC_INIT(uc);
+    if (size == 0 || size - 1 > UINT32_MAX ||
+        size - 1 > UINT64_MAX - address) {
+        restore_jit_state(uc);
+        return UC_ERR_ARG;
+    }
+    end = (address + size - 1) >> 10;
+    for (page = address >> 10; page <= end; page++) {
+        if (embedder_page_watched(uc, page) == watch)
+            continue;
+        if (page < EMBEDDER_WATCH_LOW_PAGES) {
+            if (!uc->embedder_watch)
+                uc->embedder_watch = g_malloc0(EMBEDDER_WATCH_LOW_PAGES >> 3);
+            uc->embedder_watch[page >> 3] ^= 1u << (page & 7);
+        } else if (watch) {
+            uint64_t *key = g_malloc(sizeof(*key));
+            *key = page;
+            if (!uc->embedder_high_watches) {
+                uc->embedder_high_watches = g_hash_table_new_full(
+                    embedder_watch_hash, embedder_watch_equal, g_free, NULL);
+            }
+            g_hash_table_insert(uc->embedder_high_watches, key, key);
+        } else {
+            g_hash_table_remove(uc->embedder_high_watches, &page);
+        }
+        changed = true;
+    }
+    if (changed) {
+        uc->embedder_hook_gen++;
+        embedder_flush_tlb_flags(uc);
+    }
+    restore_jit_state(uc);
+    return UC_ERR_OK;
+}
+
 UNICORN_EXPORT
 uc_err uc_embedder_watch(uc_engine *uc, uint64_t address, uint64_t size)
 {
-    uint64_t page;
-    bool changed = false;
-    UC_INIT(uc);
-    if (size == 0 || address + size - 1 > 0xffffffffULL) {
-        restore_jit_state(uc);
-        return UC_ERR_ARG;
-    }
-    if (uc->embedder_watch == NULL) {
-        uc->embedder_watch = g_malloc0(1 << 19);
-    }
-    for (page = address >> 10; page <= (address + size - 1) >> 10; page++) {
-        if (!(uc->embedder_watch[page >> 3] & (1 << (page & 7)))) {
-            uc->embedder_watch[page >> 3] |= 1 << (page & 7);
-            changed = true;
-        }
-    }
-    if (changed) {
-        uc->embedder_hook_gen++;
-        embedder_flush_tlb_flags(uc);
-    }
-    restore_jit_state(uc);
-    return UC_ERR_OK;
+    return embedder_set_watch(uc, address, size, true);
 }
 
-// embedder: retire physical page watches after the embedder releases its last
-// dependency. The embedder retains watches needed by code or reservations.
 UNICORN_EXPORT
 uc_err uc_embedder_unwatch(uc_engine *uc, uint64_t address, uint64_t size)
 {
-    uint64_t page;
-    bool changed = false;
-    UC_INIT(uc);
-    if (size == 0 || address > 0xffffffffULL ||
-        size - 1 > 0xffffffffULL - address) {
-        restore_jit_state(uc);
-        return UC_ERR_ARG;
-    }
-    if (uc->embedder_watch != NULL) {
-        for (page = address >> 10; page <= (address + size - 1) >> 10; page++) {
-            if (uc->embedder_watch[page >> 3] & (1 << (page & 7))) {
-                uc->embedder_watch[page >> 3] &= ~(1 << (page & 7));
-                changed = true;
-            }
-        }
-    }
-    if (changed) {
-        uc->embedder_hook_gen++;
-        embedder_flush_tlb_flags(uc);
-    }
-    restore_jit_state(uc);
-    return UC_ERR_OK;
+    return embedder_set_watch(uc, address, size, false);
 }
 
-// embedder: whether a store into [address, address + size) is certain to
-// reach watched write hooks in page hooks mode: every target page the range
-// touches holds a watched 1 KiB page, so its stores always take the slow
-// path. A store into another page reaches those hooks only when it takes
-// the slow path for a reason of the engine's own, such as a TLB miss, and
-// the same store done again may not.
+// Every target page touched by the store must contain a watched 1 KiB page
+// for the store to reach the watched hooks even when its TLB entry is cached.
 UNICORN_EXPORT
 bool uc_embedder_store_watched(uc_engine *uc, uint64_t address, uint64_t size)
 {
-    uint64_t last = address + size - 1;
-    uint64_t target, page;
+    uint64_t mask = uc->target_page_align;
+    uint64_t target, last, page;
 
-    if (uc->embedder_watch == NULL || size == 0 || last < address ||
-        last > 0xffffffffULL) {
+    if ((!uc->embedder_watch && !uc->embedder_high_watches) ||
+        size == 0 || size - 1 > UINT64_MAX - address) {
         return false;
     }
-    for (target = address & ~(uint64_t)uc->target_page_align; target <= last;
-         target += uc->target_page_size) {
+    last = (address + size - 1) & ~mask;
+    for (target = address & ~mask;; target += uc->target_page_size) {
         bool watched = false;
-        for (page = target >> 10;
-             page <= (target + uc->target_page_align) >> 10; page++) {
-            if (uc->embedder_watch[page >> 3] & (1 << (page & 7))) {
+        for (page = target >> 10; page <= (target | mask) >> 10; page++) {
+            if (embedder_page_watched(uc, page)) {
                 watched = true;
                 break;
             }
         }
-        if (!watched) {
-            return false;
-        }
+        if (!watched || target == last)
+            return watched;
     }
-    return true;
 }
 
 // embedder: install (or with filter NULL remove) the ARM translation filter and

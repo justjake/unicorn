@@ -291,10 +291,15 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
         tcg_temp_free_i64(tcg_ctx, thumb_page);
     } else {
 #if TCG_TARGET_REG_BITS == 64
-        TCGv_i64 mode = tcg_temp_new_i64(tcg_ctx);
-        tcg_gen_subi_i64(tcg_ctx, mode, enabled, 1);
-        tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_GTU, mode, 1, disarmed);
-        tcg_temp_free_i64(tcg_ctx, mode);
+        if ((uint64_t)pc > UINT32_MAX) {
+            // Exact accounting packs a 32-bit address into each ring entry.
+            tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, enabled, 2, disarmed);
+        } else {
+            TCGv_i64 mode = tcg_temp_new_i64(tcg_ctx);
+            tcg_gen_subi_i64(tcg_ctx, mode, enabled, 1);
+            tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_GTU, mode, 1, disarmed);
+            tcg_temp_free_i64(tcg_ctx, mode);
+        }
 #else
         tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, enabled, 2, disarmed);
 #endif
@@ -749,7 +754,9 @@ _end_loop:
                                embedder_guard.thumb_mode == 4);
             bool fast = !uc->embedder_tb_slow &&
                         (!uc->embedder_tb_thumb || !db->singlestep_enabled) &&
-                        block_end <= (UINT64_C(1) << 32) &&
+                        (block_end <= (UINT64_C(1) << 32) ||
+                         (!uc->embedder_tb_thumb &&
+                          (uint64_t)db->pc_first > UINT32_MAX)) &&
                         (!uc->embedder_tb_thumb ||
                          (thumb_mode && thumb_page));
             tcg_set_insn_param(embedder_guard.fast, 1, fast ? 1 : 0);
