@@ -909,10 +909,10 @@ static bool embedder_device_access_page(struct embedder_hook_page *e,
 static bool embedder_watched(struct uc_struct *uc, hwaddr first, hwaddr last)
 {
     hwaddr page;
-    if (uc->embedder_watch == NULL)
+    if (!uc->embedder_watch && !uc->embedder_high_watches)
         return false;
     for (page = first >> 10; page <= last >> 10; page++) {
-        if (uc->embedder_watch[page >> 3] & (1 << (page & 7)))
+        if (embedder_page_watched(uc, page))
             return true;
     }
     return false;
@@ -1091,7 +1091,7 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
                    store fast path. An engine without declared watches keeps
                    QEMU's code-write detection on every page holding code. */
                 if (!cpu->uc->embedder_page_hooks || cpu->uc->snapshot_level != 0 ||
-                    cpu->uc->embedder_watch == NULL ||
+                    (!cpu->uc->embedder_watch && !cpu->uc->embedder_high_watches) ||
                     embedder_watched(cpu->uc, paddr_page, paddr_page + TARGET_PAGE_SIZE - 1)) {
                     write_address |= TLB_NOTDIRTY;
                 }

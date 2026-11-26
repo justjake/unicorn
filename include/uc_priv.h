@@ -572,6 +572,7 @@ struct uc_struct {
     // uc_embedder_watch, which declares that the embedder watches every page it
     // sees translated (page-hooks mode then limits code-write detection to them).
     uint8_t *embedder_watch;
+    GHashTable *embedder_high_watches; // sparse 1 KiB pages above 4 GiB
     // embedder: translation filter (ARM state). Returns 0 for no code hook, 1 for
     // the hook, 2 for the hook and the end of the translated block after the
     // instruction, 3 for the hook in place of the instruction: the hook performs
@@ -702,6 +703,17 @@ struct uc_struct {
     uint32_t embedder_chain_used;
     struct UcTranslationTiming *embedder_translation_timing;
 };
+
+#define EMBEDDER_WATCH_LOW_PAGES (UINT64_C(1) << 22)
+
+static inline bool embedder_page_watched(struct uc_struct *uc, uint64_t page)
+{
+    if (page < EMBEDDER_WATCH_LOW_PAGES)
+        return uc->embedder_watch &&
+               (uc->embedder_watch[page >> 3] & (1u << (page & 7)));
+    return uc->embedder_high_watches &&
+           g_hash_table_lookup(uc->embedder_high_watches, &page);
+}
 
 // Metadata stub for the variable-size cpu context used with uc_context_*()
 struct uc_context {
