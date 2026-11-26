@@ -2511,6 +2511,9 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
                 continue;
             if (!HOOK_BOUND_CHECK(hook, paddr))
                 continue;
+            if (hook->embedder_watched &&
+                !embedder_watched(uc, paddr, paddr + (size ? size - 1 : 0)))
+                continue;
             // embedder: watched store hooks may skip the PC restore
             if (!synced && !uc->skip_sync_pc_on_exit &&
                 !(uc->embedder_write_hook_no_pc_sync && hook->embedder_watched) && retaddr) {
