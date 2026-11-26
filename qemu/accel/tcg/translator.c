@@ -281,14 +281,30 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
         guard->thumb_mode = uc->embedder_acct.enabled == 4 ? 4 : 3;
         tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, enabled,
                             guard->thumb_mode, disarmed);
-        TCGv_i64 thumb_page = tcg_temp_new_i64(tcg_ctx);
-        ucp = tcg_const_ptr(tcg_ctx, uc);
-        tcg_gen_ld_i64(tcg_ctx, thumb_page, ucp,
-                       offsetof(struct uc_struct, embedder_acct.thumb_page));
-        tcg_temp_free_ptr(tcg_ctx, ucp);
-        tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, thumb_page,
-                            (int64_t)(pc & ~UINT64_C(0xfff)), page_mismatch);
-        tcg_temp_free_i64(tcg_ctx, thumb_page);
+        uint64_t page_idx = (uint64_t)pc >> 10;
+        if (page_idx < 1024) {
+            unsigned word_idx = (unsigned)(page_idx >> 6);
+            uint64_t bit_mask = UINT64_C(1) << (page_idx & 63);
+            TCGv_i64 word = tcg_temp_new_i64(tcg_ctx);
+            ucp = tcg_const_ptr(tcg_ctx, uc);
+            tcg_gen_ld_i64(tcg_ctx, word, ucp,
+                           offsetof(struct uc_struct,
+                                    embedder_acct.thumb_page_bitmap) +
+                               word_idx * sizeof(uint64_t));
+            tcg_temp_free_ptr(tcg_ctx, ucp);
+            tcg_gen_andi_i64(tcg_ctx, word, word, (int64_t)bit_mask);
+            tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_EQ, word, 0, page_mismatch);
+            tcg_temp_free_i64(tcg_ctx, word);
+        } else {
+            TCGv_i64 thumb_page = tcg_temp_new_i64(tcg_ctx);
+            ucp = tcg_const_ptr(tcg_ctx, uc);
+            tcg_gen_ld_i64(tcg_ctx, thumb_page, ucp,
+                           offsetof(struct uc_struct, embedder_acct.thumb_page));
+            tcg_temp_free_ptr(tcg_ctx, ucp);
+            tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, thumb_page,
+                                (int64_t)(pc & ~UINT64_C(0x3ff)), page_mismatch);
+            tcg_temp_free_i64(tcg_ctx, thumb_page);
+        }
     } else {
 #if TCG_TARGET_REG_BITS == 64
         TCGv_i64 mode = tcg_temp_new_i64(tcg_ctx);
@@ -741,8 +757,8 @@ _end_loop:
         if (embedder_guard.active) {
             uint64_t block_end = (uint64_t)db->pc_first + db->tb->size;
             bool thumb_page = db->tb->size != 0 &&
-                (db->pc_first & ~UINT64_C(0xfff)) ==
-                    ((block_end - 1) & ~UINT64_C(0xfff));
+                (db->pc_first & ~UINT64_C(0x3ff)) ==
+                    ((block_end - 1) & ~UINT64_C(0x3ff));
             bool thumb_mode = embedder_guard.thumb_mode ==
                                   uc->embedder_acct.enabled &&
                               (embedder_guard.thumb_mode == 3 ||
@@ -759,7 +775,7 @@ _end_loop:
                     UC_EMBEDDER_TB_SLOW_CLASSIFIER) {
                     reason = UC_EMBEDDER_TB_SLOW_CLASSIFIER;
                 } else if (uc->embedder_tb_thumb && !thumb_page) {
-                    reason = 3; // translated bytes cross the enabled 4 KiB page
+                    reason = 3; // translated bytes cross the enabled 1 KiB page
                 }
                 tcg_set_insn_param(embedder_guard.slow_reason, 1, reason);
                 if (reason == UC_EMBEDDER_TB_SLOW_CLASSIFIER) {

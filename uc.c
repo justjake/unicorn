@@ -3566,12 +3566,15 @@ done:
 //          instruction-opportunity histograms.
 // 1 << 29: opt-in translation repeat details split generations and observed
 //          invalidation causes.
+// 1 << 30: Thumb accounting appends a 256-bit proven-page bitmap covering
+//          0x0000_0000..0x0010_0000 (256 x 4 KiB pages); addresses >= 0x100000
+//          continue to check thumb_page.
 UNICORN_EXPORT
 uint32_t uc_embedder_features(void)
 {
     return 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 |
            4096 | 1u << 20 | 1u << 21 | 1u << 22 | 1u << 23 | 1u << 24 |
-           1u << 25 | 1u << 26 | 1u << 27 | 1u << 28 | 1u << 29;
+           1u << 25 | 1u << 26 | 1u << 27 | 1u << 28 | 1u << 29 | 1u << 30;
 }
 
 UNICORN_EXPORT
@@ -3753,8 +3756,9 @@ uint64_t uc_embedder_instruction_counter(uc_engine *uc)
 // and writes budget and head directly; ring/mask/enabled/pause_requested are
 // set while no emulation runs. Layout: int64 budget, u64 head, u64 *ring,
 // u64 mask, u64 enabled, u32 *pause_requested, then ThumbBlockAccounting:
-// u64 thumb_page, u64 last_block_start, i64 last_block_remaining_budget,
-// u32 last_block_bytes, u32 last_block_icount.
+// u64 thumb_page, then ThumbBlockRecoveryAccounting: u64 last_block_start,
+// i64 last_block_remaining_budget, u32 last_block_bytes, u32 last_block_icount,
+// u64 thumb_page_bitmap[16].
 UNICORN_EXPORT
 void *uc_embedder_accounting(uc_engine *uc)
 {

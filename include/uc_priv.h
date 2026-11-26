@@ -618,7 +618,8 @@ struct uc_struct {
     // enters this helper when the budget runs out or a pause arrives. With
     // enabled == 1 the helper also pushes (start << 32 | count) to the ring;
     // with enabled == 2 the ring is not written. Thumb modes 3 and 4 use the
-    // enabled page in thumb_page; mode 4 also records each admitted block.
+    // enabled page in thumb_page (or the 1024-bit low-1 MiB bitmap in
+    // thumb_page_bitmap); mode 4 also records each admitted block.
     struct {
         int64_t budget;
         uint64_t head;
@@ -626,8 +627,8 @@ struct uc_struct {
         uint64_t mask;
         uint64_t enabled;
         const uint32_t *pause_requested;
-        // Thumb coarse accounting is restricted to this enabled 4 KiB page.
-        // Appended so the existing field offsets remain stable.
+        // Thumb coarse accounting is restricted to this enabled 1 KiB page
+        // for addresses >= 0x100000. Appended so existing offsets stay stable.
         uint64_t thumb_page;
         // Mode 4 records each admitted Thumb block before entering guest code.
         // last_block_bytes == 0 means no record is available.
@@ -635,6 +636,10 @@ struct uc_struct {
         int64_t last_block_remaining_budget;
         uint32_t last_block_bytes;
         uint32_t last_block_icount;
+        // 1024-bit proven-page bitmap covering 0x0000_0000..0x0010_0000
+        // (1024 x 1 KiB pages = 1 MiB). Bit `page = pc >> 10` lives at
+        // thumb_page_bitmap[page >> 6] & (1ULL << (page & 63)).
+        uint64_t thumb_page_bitmap[16];
     } embedder_acct;
     // Observational host counters, never serialized in a CPU context. Entries
     // 0..6 are actual jumps by call site; 7..9 are request origins; 10..11
