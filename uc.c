@@ -1270,8 +1270,10 @@ uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
     // the guest. The level advanced above is given back, as this run never
     // entered it.
     if (__atomic_exchange_n(&uc->pending_stop, 0, __ATOMIC_SEQ_CST)) {
-        uc->nested_level--;
-        uc->emulation_done = true;
+        if (--uc->nested_level == 0) {
+            uc->emulation_done = true;
+            restore_jit_state(uc);
+        }
         return UC_ERR_OK;
     }
 
@@ -1375,12 +1377,15 @@ uc_err uc_emu_stop(uc_engine *uc)
 UNICORN_EXPORT
 uc_err uc_emu_request_pause(uc_engine *uc)
 {
-    UC_INIT(uc);
+    if (!uc) {
+        return UC_ERR_HANDLE;
+    }
+    // The requester is not the JIT owner. Only the execution thread may
+    // change the engine's JIT nesting and its thread-local protection state.
     __atomic_store_n(&uc->pending_stop, 1, __ATOMIC_SEQ_CST);
     if (uc->cpu) {
         cpu_exit(uc->cpu);
     }
-    restore_jit_state(uc);
     return UC_ERR_OK;
 }
 
