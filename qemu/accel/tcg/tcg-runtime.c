@@ -262,7 +262,7 @@ void HELPER(check_exit_request)(void *p, uint32_t in_delay_slot) {
             return;
 #else
             uc->embedder_exit_site = UC_EXIT_RETRY_JUMP;
-            if (uc->nested_level == 1) {
+            if (uc->nested_level == 1 && !uc_embedder_keep_jit_rx(uc)) {
                 tb_exec_unlock(uc);
             }
             cpu_loop_exit_restore(uc->cpu, GETPC());
@@ -289,7 +289,7 @@ void HELPER(check_exit_request)(void *p, uint32_t in_delay_slot) {
         // There are stil something we have to before exiting to be compatible with previous behaviors
 
         // from cpu_tb_exec
-        if (uc->nested_level == 1) {
+        if (uc->nested_level == 1 && !uc_embedder_keep_jit_rx(uc)) {
             // Only unlock (allow writing to JIT area) if we are the outmost uc_emu_start
             tb_exec_unlock(uc);
         }

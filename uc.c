@@ -1291,6 +1291,17 @@ uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
         uc->exits[uc->nested_level - 1] = until;
     }
 
+#if !defined(CONFIG_TCG_INTERPRETER) && defined(__APPLE__) && \
+    defined(HAVE_PTHREAD_JIT_PROTECT) && defined(__aarch64__)
+    if (uc->nested_level == 1) {
+        uc->embedder_keep_jit_rx =
+            uc->arch == UC_ARCH_ARM && uc->cpu_model == UC_CPU_ARM_CORTEX_A7 &&
+            uc->embedder_entry_exits && uc->embedder_insn_filter &&
+            uc->embedder_acct.enabled == UC_EMBEDDER_EXACT_LATEST &&
+            !uc->embedder_acct.pause_requested && !uc->cpu->embedder_parallel_cpus &&
+            !count && !timeout;
+    }
+#endif
     if (timeout) {
         enable_emu_timer(uc, timeout * 1000); // microseconds -> nanoseconds
     }

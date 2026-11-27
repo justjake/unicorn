@@ -40,7 +40,7 @@ void cpu_loop_exit(CPUState *cpu)
     cpu->uc->embedder_exit_counters[cpu->uc->embedder_exit_site]++;
     cpu->uc->embedder_exit_site = UC_EXIT_DIRECT;
     /* Unlock JIT write protect if applicable. */
-    if (cpu->uc->nested_level == 1) {
+    if (cpu->uc->nested_level == 1 && !uc_embedder_keep_jit_rx(cpu->uc)) {
         tb_exec_unlock(cpu->uc);
     }
     /* Undo the setting in cpu_tb_exec.  */

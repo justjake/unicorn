@@ -559,6 +559,8 @@ struct uc_struct {
     uint64_t nested; // the nested level of all exposed API
     bool thread_executable_entry;
     bool current_executable;
+    /* The outer counted run leaves code protected between code updates. */
+    bool embedder_keep_jit_rx;
     bool skip_sync_pc_on_exit;
     // embedder: do not restore the guest PC before UC_HOOK_MEM_WRITE callbacks
     bool embedder_write_hook_no_pc_sync;
@@ -807,6 +809,17 @@ static inline void hooked_regions_check(uc_engine *uc, uint64_t start,
     hooked_regions_check_single(uc->hook[UC_HOOK_CODE_IDX].head, start, length);
     hooked_regions_check_single(uc->hook[UC_HOOK_BLOCK_IDX].head, start,
                                 length);
+}
+
+static inline bool uc_embedder_keep_jit_rx(const uc_engine *uc)
+{
+#if !defined(CONFIG_TCG_INTERPRETER) && defined(__APPLE__) && \
+    defined(HAVE_PTHREAD_JIT_PROTECT) && defined(__aarch64__)
+    return uc->embedder_keep_jit_rx && uc->nested_level == 1;
+#else
+    (void)uc;
+    return false;
+#endif
 }
 
 /*
