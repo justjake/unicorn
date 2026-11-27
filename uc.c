@@ -2284,19 +2284,24 @@ static void uc_tracecode_hooks(int32_t size, uc_hook_idx index, void *handle,
         return;
     }
 
-    // embedder: exact block accounting keeps its ring write in this helper.
+    // Exact ARM accounting records the admitted span for recovery.
     // Coarse interactive accounting is debited by the translated guard, so a
     // fast block that reaches this helper has already run out of budget and
     // needs the embedder's own settlement.
     if (index == UC_HOOK_BLOCK_IDX && (size & 0x40000000) &&
-        uc->embedder_acct.enabled == 1) {
+        (uc->embedder_acct.enabled == 1 ||
+         uc->embedder_acct.enabled == UC_EMBEDDER_EXACT_LATEST)) {
         int64_t count = (size & 0x3fffffff) >> 2;
         if (uc->embedder_acct.budget >= count &&
             address >= 0 &&
             (uint64_t)address + (size & 0x3fffffff) <= (UINT64_C(1) << 32)) {
             uc->embedder_acct.budget -= count;
-            uc->embedder_acct.ring[uc->embedder_acct.head++ & uc->embedder_acct.mask] =
-                ((uint64_t)(uint32_t)address << 32) | (uint64_t)count;
+            uint64_t span = ((uint64_t)(uint32_t)address << 32) | (uint64_t)count;
+            if (uc->embedder_acct.enabled == UC_EMBEDDER_EXACT_LATEST) {
+                uc->embedder_acct.head = span;
+            } else {
+                uc->embedder_acct.ring[uc->embedder_acct.head++ & uc->embedder_acct.mask] = span;
+            }
             return;
         }
     }
@@ -3566,12 +3571,13 @@ done:
 //          instruction-opportunity histograms.
 // 1 << 29: opt-in translation repeat details split generations and observed
 //          invalidation causes.
+// 1 << 30: exact A32 mode 5 records only the newest admitted block.
 UNICORN_EXPORT
 uint32_t uc_embedder_features(void)
 {
     return 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 |
            4096 | 1u << 20 | 1u << 21 | 1u << 22 | 1u << 23 | 1u << 24 |
-           1u << 25 | 1u << 26 | 1u << 27 | 1u << 28 | 1u << 29;
+           1u << 25 | 1u << 26 | 1u << 27 | 1u << 28 | 1u << 29 | 1u << 30;
 }
 
 UNICORN_EXPORT

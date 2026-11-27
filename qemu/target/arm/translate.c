@@ -2739,7 +2739,9 @@ static void gen_goto_ptr(TCGContext *tcg_ctx)
 #if !defined(TARGET_AARCH64) && defined(__aarch64__) && TCG_TARGET_HAS_goto_ptr && !defined(CONFIG_DEBUG_TCG)
     struct uc_struct *uc = tcg_ctx->uc;
 
-    if (uc->cpu_model == UC_CPU_ARM_CORTEX_A7 && uc->embedder_acct.enabled == 1) {
+    if (uc->cpu_model == UC_CPU_ARM_CORTEX_A7 &&
+        (uc->embedder_acct.enabled == 1 ||
+         uc->embedder_acct.enabled == UC_EMBEDDER_EXACT_LATEST)) {
         if (!uc->embedder_a32_dispatch) {
             uc->embedder_a32_dispatch = calloc(UC_A32_DISPATCH_SLOTS,
                                                sizeof(*uc->embedder_a32_dispatch));

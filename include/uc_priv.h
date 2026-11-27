@@ -350,6 +350,8 @@ typedef struct uc_backing_observer {
     } \
 } while (0)
 
+#define UC_EMBEDDER_EXACT_LATEST 5
+
 // embedder: block chains. The record the embedder shares with translated
 // code (uc_embedder_block_chain). The embedder reads and writes it from hooks
 // and while no emulation runs.
@@ -619,6 +621,8 @@ struct uc_struct {
     // enabled == 1 the helper also pushes (start << 32 | count) to the ring;
     // with enabled == 2 the ring is not written. Thumb modes 3 and 4 use the
     // enabled page in thumb_page; mode 4 also records each admitted block.
+    // UC_EMBEDDER_EXACT_LATEST stores the newest packed span in head instead.
+    // The owner clears head at settlement and uses mode 1 for entry history.
     struct {
         int64_t budget;
         uint64_t head;

@@ -244,15 +244,25 @@ static void free_embedder_engine_ptr(TCGContext *tcg_ctx, TCGv_ptr ucp)
 }
 
 #if TCG_TARGET_REG_BITS == 64
-static void gen_embedder_exact_ring(TCGContext *tcg_ctx, struct uc_struct *uc,
-                                    struct EmbedderBlockGuard *guard)
+static void gen_embedder_exact_record(TCGContext *tcg_ctx, struct uc_struct *uc,
+                                      struct EmbedderBlockGuard *guard, bool latest)
 {
     TCGv_ptr ucp = gen_embedder_engine_ptr(tcg_ctx, uc);
+    TCGv_i64 packed = tcg_temp_new_i64(tcg_ctx);
+    tcg_gen_movi_i64(tcg_ctx, packed, 0);
+    guard->packed = tcg_last_op(tcg_ctx);
+
+    if (latest) {
+        tcg_gen_st_i64(tcg_ctx, packed, ucp, offsetof(struct uc_struct, embedder_acct.head));
+        tcg_temp_free_i64(tcg_ctx, packed);
+        free_embedder_engine_ptr(tcg_ctx, ucp);
+        return;
+    }
+
     TCGv_i64 head = tcg_temp_new_i64(tcg_ctx);
     TCGv_i64 mask = tcg_temp_new_i64(tcg_ctx);
     TCGv_i64 index = tcg_temp_new_i64(tcg_ctx);
     TCGv_ptr ring = tcg_temp_new_ptr(tcg_ctx);
-    TCGv_i64 packed = tcg_temp_new_i64(tcg_ctx);
     TCGv_ptr slot = tcg_temp_new_ptr(tcg_ctx);
 
     tcg_gen_ld_i64(tcg_ctx, head, ucp, offsetof(struct uc_struct, embedder_acct.head));
@@ -262,8 +272,6 @@ static void gen_embedder_exact_ring(TCGContext *tcg_ctx, struct uc_struct *uc,
     tcg_gen_shli_i64(tcg_ctx, index, index, 3);
     tcg_gen_trunc_i64_ptr(tcg_ctx, slot, index);
     tcg_gen_add_ptr(tcg_ctx, slot, slot, ring);
-    tcg_gen_movi_i64(tcg_ctx, packed, 0);
-    guard->packed = tcg_last_op(tcg_ctx);
     tcg_gen_st_i64(tcg_ctx, packed, slot, 0);
     tcg_gen_addi_i64(tcg_ctx, head, head, 1);
     tcg_gen_st_i64(tcg_ctx, head, ucp, offsetof(struct uc_struct, embedder_acct.head));
@@ -281,10 +289,11 @@ static bool gen_a32_exact_guard(TCGContext *tcg_ctx, struct uc_struct *uc,
                                 target_ulong pc, struct EmbedderBlockGuard *guard)
 {
 #if defined(TARGET_ARM) && !defined(TARGET_AARCH64) && defined(__aarch64__) && !defined(CONFIG_TCG_INTERPRETER)
-    /* This is the counted foreground ARMv7-A owner's exact ring. Owners
+    /* This is the counted foreground ARMv7-A owner's exact record. Owners
      * that install an asynchronous pause flag use the general guard. */
+    uint64_t mode = uc->embedder_acct.enabled;
     if (uc->cpu_model != UC_CPU_ARM_CORTEX_A7 || !uc->embedder_entry_exits ||
-        uc->embedder_tb_thumb || uc->embedder_acct.enabled != 1 ||
+        uc->embedder_tb_thumb || (mode != 1 && mode != UC_EMBEDDER_EXACT_LATEST) ||
         uc->embedder_acct.pause_requested || uc->embedder_guard_diagnostics) {
         return false;
     }
@@ -318,7 +327,7 @@ static bool gen_a32_exact_guard(TCGContext *tcg_ctx, struct uc_struct *uc,
     tcg_gen_sub_i64(tcg_ctx, budget, budget, guard->count_value);
     tcg_gen_shri_i64(tcg_ctx, refused, budget, 63);
     tcg_gen_ld_i64(tcg_ctx, scratch, ucp, offsetof(struct uc_struct, embedder_acct.enabled));
-    tcg_gen_xori_i64(tcg_ctx, scratch, scratch, 1);
+    tcg_gen_xori_i64(tcg_ctx, scratch, scratch, mode);
     tcg_gen_or_i64(tcg_ctx, refused, refused, scratch);
     tcg_gen_ld_i64(tcg_ctx, scratch, ucp, offsetof(struct uc_struct, embedder_acct.pause_requested));
     tcg_gen_or_i64(tcg_ctx, refused, refused, scratch);
@@ -331,7 +340,7 @@ static bool gen_a32_exact_guard(TCGContext *tcg_ctx, struct uc_struct *uc,
     tcg_gen_st_i64(tcg_ctx, budget, ucp, offsetof(struct uc_struct, embedder_acct.budget));
     tcg_temp_free_i64(tcg_ctx, budget);
     free_embedder_engine_ptr(tcg_ctx, ucp);
-    gen_embedder_exact_ring(tcg_ctx, uc, guard);
+    gen_embedder_exact_record(tcg_ctx, uc, guard, mode == UC_EMBEDDER_EXACT_LATEST);
     tcg_gen_br(tcg_ctx, body);
 
     gen_set_label(tcg_ctx, helper);
@@ -462,7 +471,7 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
     }
 #if TCG_TARGET_REG_BITS == 64
     tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, enabled, 1, body);
-    gen_embedder_exact_ring(tcg_ctx, uc, guard);
+    gen_embedder_exact_record(tcg_ctx, uc, guard, false);
 #endif
     tcg_gen_br(tcg_ctx, body);
 
