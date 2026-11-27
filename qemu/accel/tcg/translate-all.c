@@ -2453,8 +2453,9 @@ static void count_restart_tail(CPUState *cpu, TranslationBlock *tb,
    instruction executing at retaddr as a block of its own. remember: also end
    later translations at it and retranslate the block it was found in. The
    embedder's embedder_restart callback learns its PC first. */
-void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember,
-                           bool remember_watched_store)
+static void embedder_restart_memory_insn(CPUState *cpu, uintptr_t retaddr,
+                                         bool remember, bool remember_watched_store,
+                                         bool isolate)
 {
     struct uc_struct *uc = cpu->uc;
     TCGContext *tcg_ctx = uc->tcg_ctx;
@@ -2482,7 +2483,7 @@ void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember,
     if (index < 0) {
         return;
     }
-    if (index == tb->icount - 1) {
+    if (index == tb->icount - 1 && (!isolate || tb->icount == 1)) {
         if (remember_watched_store) {
             uc->embedder_exit_counters[UC_COUNT_WATCHED_STORE_TERMINAL_REQUESTS]++;
         }
@@ -2530,6 +2531,18 @@ void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember,
         tb_exec_unlock(uc);
     }
     cpu_loop_exit_noexc(cpu);
+}
+
+void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember,
+                           bool remember_watched_store)
+{
+    embedder_restart_memory_insn(cpu, retaddr, remember, remember_watched_store,
+                                false);
+}
+
+void embedder_isolate_insn(CPUState *cpu, uintptr_t retaddr)
+{
+    embedder_restart_memory_insn(cpu, retaddr, false, false, true);
 }
 
 /* embedder: translate again from the current instruction (its hook has not

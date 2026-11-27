@@ -22,6 +22,24 @@
 #include "arm_ldst.h"
 #include "exec/cpu_ldst.h"
 
+/* A multiple load can be restarted only before its first transfer. A
+ * direct TLB read excludes MMIO, watchpoints and mappings with read hooks
+ * when page hooks are active. The exact path handles all other spans. */
+void HELPER(embedder_guard_ram_load)(CPUARMState *env, uint32_t addr,
+                                     uint32_t bytes, uint32_t mmu_idx)
+{
+    struct uc_struct *uc = env_cpu(env)->uc;
+    uint32_t last = addr + (bytes - 1);
+
+    if (likely(uc->embedder_page_hooks && !(addr & 3) && last >= addr &&
+               tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx) &&
+               (((addr ^ last) & TARGET_PAGE_MASK) == 0 ||
+                tlb_vaddr_to_host(env, last, MMU_DATA_LOAD, mmu_idx)))) {
+        return;
+    }
+    embedder_isolate_insn(env_cpu(env), GETPC());
+}
+
 static void v7m_msr_xpsr(CPUARMState *env, uint32_t mask,
                          uint32_t reg, uint32_t val)
 {

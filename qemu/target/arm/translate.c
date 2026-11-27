@@ -9326,6 +9326,26 @@ static bool op_store_ri(DisasContext *s, arg_ldst_ri *a,
     return true;
 }
 
+static void guard_thumb_ram_load(DisasContext *s, TCGv_i32 addr,
+                                 int words, int mem_idx)
+{
+    if (!s->thumb || !s->embedder_guard_ram_load) {
+        return;
+    }
+    if (s->base.max_insns == 1) {
+        /* The isolated retry executes under the existing observation path,
+         * with no guard before its transfers. */
+        UC_EMBEDDER_MARK_TB_SLOW(s->uc, UC_EMBEDDER_TB_SLOW_OTHER);
+        return;
+    }
+    TCGContext *tcg_ctx = s->uc->tcg_ctx;
+    TCGv_i32 length = tcg_const_i32(tcg_ctx, words * 4);
+    TCGv_i32 mmu = tcg_const_i32(tcg_ctx, mem_idx);
+    gen_helper_embedder_guard_ram_load(tcg_ctx, tcg_ctx->cpu_env, addr, length, mmu);
+    tcg_temp_free_i32(tcg_ctx, mmu);
+    tcg_temp_free_i32(tcg_ctx, length);
+}
+
 static bool op_ldrd_ri(DisasContext *s, arg_ldst_ri *a, int rt2)
 {
     TCGContext *tcg_ctx = s->uc->tcg_ctx;
@@ -9333,6 +9353,7 @@ static bool op_ldrd_ri(DisasContext *s, arg_ldst_ri *a, int rt2)
     TCGv_i32 addr, tmp;
 
     addr = op_addr_ri_pre(s, a);
+    guard_thumb_ram_load(s, addr, 2, mem_idx);
 
     tmp = tcg_temp_new_i32(tcg_ctx);
     gen_aa32_ld_i32(s, tmp, addr, mem_idx, MO_UL | s->be_data);
@@ -10606,6 +10627,7 @@ static bool do_ldm(DisasContext *s, arg_ldst_block *a, int min_n)
 
     addr = op_addr_block_pre(s, a, n);
     mem_idx = get_mem_index(s);
+    guard_thumb_ram_load(s, addr, n, mem_idx);
     loaded_base = false;
     loaded_var = NULL;
 
@@ -11771,9 +11793,8 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 
     if ((uc->embedder_acct.enabled == 3 || uc->embedder_acct.enabled == 4) &&
         uc->embedder_insn_filter) {
-        // This opt-in classification only decides whether translated block
-        // accounting must retain its helper. It never changes Thumb hook or
-        // instruction translation behavior.
+        // The opt-in classifier selects block accounting and may require
+        // an execution guard before a Thumb instruction's first effect.
         embedder_decision = uc->embedder_insn_filter(uc->embedder_filter_user,
                                                      dc->base.pc_next - insn_size,
                                                      insn);
@@ -11830,6 +11851,12 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     }
 
     tcg_ctx->pc_start = dc->base.pc_next - insn_size;
+    dc->embedder_guard_ram_load = uc->embedder_acct.enabled == 4 &&
+                                  (embedder_decision & 64) &&
+                                  arm_dc_feature(dc, ARM_FEATURE_M);
+    if ((embedder_decision & 64) && !dc->embedder_guard_ram_load) {
+        UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_OTHER);
+    }
     if (is_16bit) {
         disas_thumb_insn(dc, insn);
     } else {

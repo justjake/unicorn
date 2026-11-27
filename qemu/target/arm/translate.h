@@ -15,6 +15,7 @@ typedef struct DisasContext {
     target_ulong pc_curr;
     target_ulong page_start;
     uint32_t insn;
+    bool embedder_guard_ram_load;
     /* Nonzero if this instruction has been conditionally skipped.  */
     int condjmp;
     /* The label that will be jumped to when the instruction is skipped.  */
