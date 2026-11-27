@@ -1931,6 +1931,26 @@ static void tcg_out_op(TCGContext *s, TCGOpcode opc,
         }
         break;
 
+    case INDEX_op_a32_exact_admit: {
+        TCGLabel *slow = arg_label(a0);
+        const TCGReg engine = TCG_REG_X28;
+        const TCGReg tmp = TCG_REG_TMP;
+        const int budget = offsetof(struct uc_struct, embedder_acct.budget);
+        /* Keep admission in the reserved scratch register. Ordinary TCG
+         * branches spill a temporary that must survive the refusal edge. */
+        tcg_out_ld(s, TCG_TYPE_I64, tmp, engine,
+                   offsetof(struct uc_struct, embedder_acct.enabled));
+        tcg_out_brcond(s, TCG_TYPE_I64, TCG_COND_NE, tmp, a2, true, slow);
+        tcg_out_ld(s, TCG_TYPE_I64, tmp, engine,
+                   offsetof(struct uc_struct, embedder_acct.pause_requested));
+        tcg_out_brcond(s, TCG_TYPE_I64, TCG_COND_NE, tmp, 0, true, slow);
+        tcg_out_ld(s, TCG_TYPE_I64, tmp, engine, budget);
+        tcg_debug_assert(a1 <= 4095);
+        tcg_out_insn(s, 3401, SUBI, TCG_TYPE_I64, tmp, tmp, a1);
+        tcg_out_brcond(s, TCG_TYPE_I64, TCG_COND_LT, tmp, 0, true, slow);
+        tcg_out_st(s, TCG_TYPE_I64, tmp, engine, budget);
+        break;
+    }
     case INDEX_op_br:
         tcg_out_goto_label(s, arg_label(a0));
         break;

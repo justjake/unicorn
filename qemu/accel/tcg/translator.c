@@ -49,6 +49,7 @@ struct EmbedderBlockGuard {
     TCGOp *classifier_histogram_icount;
     TCGOp *count_low;
     TCGOp *count_high;
+    TCGOp *native_admit;
     TCGOp *size;
     TCGOp *packed;
     TCGOp *record_bytes;
@@ -316,30 +317,37 @@ static bool gen_a32_exact_guard(TCGContext *tcg_ctx, struct uc_struct *uc,
     tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_NE, stop, 0, body);
     tcg_temp_free_i32(tcg_ctx, stop);
 
-    ucp = gen_embedder_engine_ptr(tcg_ctx, uc);
-    budget = tcg_temp_local_new_i64(tcg_ctx);
-    refused = tcg_temp_new_i64(tcg_ctx);
-    scratch = tcg_temp_new_i64(tcg_ctx);
-    guard->count_value = tcg_temp_new_i64(tcg_ctx);
-    tcg_gen_movi_i64(tcg_ctx, guard->count_value, 0);
-    guard->count_low = tcg_last_op(tcg_ctx);
-    tcg_gen_ld_i64(tcg_ctx, budget, ucp, offsetof(struct uc_struct, embedder_acct.budget));
-    tcg_gen_sub_i64(tcg_ctx, budget, budget, guard->count_value);
-    tcg_gen_shri_i64(tcg_ctx, refused, budget, 63);
-    tcg_gen_ld_i64(tcg_ctx, scratch, ucp, offsetof(struct uc_struct, embedder_acct.enabled));
-    tcg_gen_xori_i64(tcg_ctx, scratch, scratch, mode);
-    tcg_gen_or_i64(tcg_ctx, refused, refused, scratch);
-    tcg_gen_ld_i64(tcg_ctx, scratch, ucp, offsetof(struct uc_struct, embedder_acct.pause_requested));
-    tcg_gen_or_i64(tcg_ctx, refused, refused, scratch);
-    tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, refused, 0, helper);
-    tcg_temp_free_i64(tcg_ctx, scratch);
-    tcg_temp_free_i64(tcg_ctx, refused);
-    free_embedder_engine_ptr(tcg_ctx, ucp);
+    if (TCG_TARGET_HAS_a32_exact_admit && tcg_ctx->embedder_engine_ptr &&
+        mode == UC_EMBEDDER_EXACT_LATEST) {
+        helper->refs++;
+        tcg_gen_op3(tcg_ctx, INDEX_op_a32_exact_admit, label_arg(helper), 0, mode);
+        guard->native_admit = tcg_last_op(tcg_ctx);
+    } else {
+        ucp = gen_embedder_engine_ptr(tcg_ctx, uc);
+        budget = tcg_temp_local_new_i64(tcg_ctx);
+        refused = tcg_temp_new_i64(tcg_ctx);
+        scratch = tcg_temp_new_i64(tcg_ctx);
+        guard->count_value = tcg_temp_new_i64(tcg_ctx);
+        tcg_gen_movi_i64(tcg_ctx, guard->count_value, 0);
+        guard->count_low = tcg_last_op(tcg_ctx);
+        tcg_gen_ld_i64(tcg_ctx, budget, ucp, offsetof(struct uc_struct, embedder_acct.budget));
+        tcg_gen_sub_i64(tcg_ctx, budget, budget, guard->count_value);
+        tcg_gen_shri_i64(tcg_ctx, refused, budget, 63);
+        tcg_gen_ld_i64(tcg_ctx, scratch, ucp, offsetof(struct uc_struct, embedder_acct.enabled));
+        tcg_gen_xori_i64(tcg_ctx, scratch, scratch, mode);
+        tcg_gen_or_i64(tcg_ctx, refused, refused, scratch);
+        tcg_gen_ld_i64(tcg_ctx, scratch, ucp, offsetof(struct uc_struct, embedder_acct.pause_requested));
+        tcg_gen_or_i64(tcg_ctx, refused, refused, scratch);
+        tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, refused, 0, helper);
+        tcg_temp_free_i64(tcg_ctx, scratch);
+        tcg_temp_free_i64(tcg_ctx, refused);
+        free_embedder_engine_ptr(tcg_ctx, ucp);
 
-    ucp = gen_embedder_engine_ptr(tcg_ctx, uc);
-    tcg_gen_st_i64(tcg_ctx, budget, ucp, offsetof(struct uc_struct, embedder_acct.budget));
-    tcg_temp_free_i64(tcg_ctx, budget);
-    free_embedder_engine_ptr(tcg_ctx, ucp);
+        ucp = gen_embedder_engine_ptr(tcg_ctx, uc);
+        tcg_gen_st_i64(tcg_ctx, budget, ucp, offsetof(struct uc_struct, embedder_acct.budget));
+        tcg_temp_free_i64(tcg_ctx, budget);
+        free_embedder_engine_ptr(tcg_ctx, ucp);
+    }
     gen_embedder_exact_record(tcg_ctx, uc, guard, mode == UC_EMBEDDER_EXACT_LATEST);
     tcg_gen_br(tcg_ctx, body);
 
@@ -876,8 +884,12 @@ _end_loop:
                                        db->tb->icount);
                 }
             }
-            tcg_set_insn_param(embedder_guard.count_low, 1,
-                               (uint32_t)db->tb->icount);
+            if (embedder_guard.native_admit) {
+                tcg_set_insn_param(embedder_guard.native_admit, 1, db->tb->icount);
+            } else {
+                tcg_set_insn_param(embedder_guard.count_low, 1,
+                                   (uint32_t)db->tb->icount);
+            }
             if (embedder_guard.count_high) {
                 tcg_set_insn_param(embedder_guard.count_high, 1, 0);
             }

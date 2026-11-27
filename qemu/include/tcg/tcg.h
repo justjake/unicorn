@@ -32,6 +32,10 @@
 #include "qemu/queue.h"
 #include "tcg/tcg-mo.h"
 #include "tcg-target.h"
+
+#ifndef TCG_TARGET_HAS_a32_exact_admit
+#define TCG_TARGET_HAS_a32_exact_admit 0
+#endif
 #include "tcg-apple-jit.h"
 #include "qemu/int128.h"
 
