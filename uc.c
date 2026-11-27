@@ -1572,7 +1572,13 @@ uc_err uc_embedder_replace_backing(uc_engine *uc, uint64_t address, uint64_t siz
     uc->embedder_preserve_tlb = true;
     uc->readonly_mem(mr, (perms & UC_PROT_WRITE) == 0);
     uc->embedder_preserve_tlb = false;
-    uc->tcg_flush_physical_tlb(uc, address, size);
+    if (uc->arch == UC_ARCH_ARM && (uc->mode & UC_MODE_MCLASS) &&
+        uc->embedder_code_store) {
+        // Retargeting can create an alias with an unchanged guest mapping.
+        uc->tcg_flush_tlb(uc);
+    } else {
+        uc->tcg_flush_physical_tlb(uc, address, size);
+    }
     uc->tb_flush(uc);
     restore_jit_state(uc);
     return UC_ERR_OK;
@@ -3522,8 +3528,12 @@ uc_err uc_embedder_set_code_store(uc_engine *uc,
                                   void *user)
 {
     UC_INIT(uc);
+    bool switched = (uc->embedder_code_store != NULL) != (callback != NULL);
     uc->embedder_code_store = callback;
     uc->embedder_restart_on_code_store = callback != NULL;
+    if (switched && uc->arch == UC_ARCH_ARM && (uc->mode & UC_MODE_MCLASS)) {
+        uc->tcg_flush_tlb(uc);
+    }
     if (callback) {
         uc->embedder_code_store_user = user;
     }
