@@ -89,6 +89,16 @@ static int tcg_cpu_exec(struct uc_struct *uc)
     while (!uc->exit_request) {
         CPUState *cpu = uc->cpu;
 
+        // embedder: uc_emu_request_pause records a cross-thread pause here.
+        // Consume it between guest runs so a request that arrived while this
+        // loop was between iterations is never lost, and report it as an
+        // ordinary stop.
+        if (__atomic_exchange_n(&uc->pending_stop, 0, __ATOMIC_SEQ_CST)) {
+            uc->stop_request = true;
+            finish = true;
+            break;
+        }
+
         //qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
         //                  (cpu->singlestep_enabled & SSTEP_NOTIMER) == 0);
         if (cpu_can_run(cpu)) {

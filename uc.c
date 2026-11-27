@@ -1155,19 +1155,6 @@ uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
         UC_INIT(uc);
     }
 
-    // embedder: a stop raised before this call is still outstanding, including
-    // one raised between this call's entry and the first guest instruction.
-    // Consume it atomically and return without entering a translation: the
-    // owner asked for the processor to stay stopped, and the PC still names
-    // the block that did not run. The nested level is untouched, as it was
-    // never advanced.
-    if (uc->nested_level == 0 &&
-        __atomic_exchange_n(&uc->pending_stop, 0, __ATOMIC_ACQUIRE)) {
-        uc->stop_request = false;
-        uc->emulation_done = true;
-        return UC_ERR_OK;
-    }
-
     // Advance the nested levels. We must decrease the level count by one when
     // we return from uc_emu_start.
     if (uc->nested_level >= UC_MAX_NESTED_LEVEL) {
@@ -1266,6 +1253,17 @@ uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
     uc->skip_sync_pc_on_exit = false;
     uc->stop_request = false;
 
+    // embedder: a pause requested through uc_emu_request_pause that raced this
+    // run's stop_request reset is still outstanding. Consume it here, after
+    // the reset and before any translation runs, and leave without entering
+    // the guest. The level advanced above is given back, as this run never
+    // entered it.
+    if (__atomic_exchange_n(&uc->pending_stop, 0, __ATOMIC_SEQ_CST)) {
+        uc->nested_level--;
+        uc->emulation_done = true;
+        return UC_ERR_OK;
+    }
+
     uc->emu_count = count;
     // A translation-filter owner manages its own instruction entries. Keep
     // the legacy counter there; ordinary A64 runs use fixed-width TB counts.
@@ -1344,19 +1342,29 @@ uc_err uc_emu_stop(uc_engine *uc)
 {
     uc->embedder_exit_counters[UC_EXIT_STOP_REQUEST]++;
     UC_INIT(uc);
-    // embedder: a stop raised outside a run must survive into the next
-    // uc_emu_start, which otherwise clears stop_request and would lose it. A
-    // stop raised from inside a run (budget exhaustion, a hook, a register
-    // write) is already carried by stop_request and cpu_exit, and must not
-    // leak into the following run. The nested level is nonzero only inside
-    // uc_emu_start.
-    if (uc->nested_level == 0) {
-        __atomic_store_n(&uc->pending_stop, 1, __ATOMIC_RELEASE);
-    }
     uc->stop_request = true;
     uc_err err = break_translation_loop(uc);
     restore_jit_state(uc);
     return err;
+}
+
+// embedder: request a pause from another thread. A same-thread uc_emu_stop
+// sets stop_request, which the next uc_emu_start clears on entry, so a request
+// raised just before a run begins would be lost. This entry point records the
+// request where uc_emu_start looks for it, with sequential consistency against
+// the exchange there, and wakes a run that is already executing: cpu_exit sets
+// the decrementer's high half to -1, which every translation block's entry test
+// reads. uc_emu_stop keeps its same-thread semantics.
+UNICORN_EXPORT
+uc_err uc_emu_request_pause(uc_engine *uc)
+{
+    UC_INIT(uc);
+    __atomic_store_n(&uc->pending_stop, 1, __ATOMIC_SEQ_CST);
+    if (uc->cpu) {
+        cpu_exit(uc->cpu);
+    }
+    restore_jit_state(uc);
+    return UC_ERR_OK;
 }
 
 // return target index where a memory region at the address exists, or could be
@@ -3901,4 +3909,16 @@ const uint64_t *uc_embedder_translation_repeat_counters(uc_engine *uc,
                                                          size_t *count)
 {
     return uc_translation_timing_repeat_counters(uc, count);
+}
+
+// Opt-in translation generation diagnostics. See uc_embedder_features bit 29.
+// The fixed array is (count, elapsed_ns) pairs by why tb_gen_code ran: a key
+// never translated, a key invalidated earlier, a key lost to a global flush, a
+// block made with CF_LAST_IO for an IO recompile or a device access, and every
+// other fresh key (a different cflags variant of a cached block).
+UNICORN_EXPORT
+const uint64_t *uc_embedder_translation_generation_counters(uc_engine *uc,
+                                                             size_t *count)
+{
+    return uc_translation_timing_generation_counters(uc, count);
 }
