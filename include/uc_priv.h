@@ -644,6 +644,15 @@ struct uc_struct {
     bool tci_return_pending; // TCI helper asks for an unchained return
     /* Bumped whenever a translation dies, so cached targets can be dropped. */
     uint64_t embedder_tb_epoch;
+    /* Indirect targets for the counted native AArch32 backend. */
+    uint64_t embedder_a32_dispatch_epoch;
+#define UC_A32_DISPATCH_SLOTS 2048
+    struct embedder_a32_target {
+        uint64_t key;
+        uint64_t epoch;
+        uint64_t code;
+        uint64_t config;
+    } *embedder_a32_dispatch;
     /* A short-descriptor walk may have cached a non-global translation.
      * Clear this only once all TLB modes are clean. */
     bool embedder_ng_cached;
@@ -699,6 +708,15 @@ struct uc_struct {
 };
 
 // Metadata stub for the variable-size cpu context used with uc_context_*()
+/* Invalidate cached targets when executable mappings or translations change. */
+static inline void uc_a32_dispatch_invalidate(struct uc_struct *uc)
+{
+    if (uc->embedder_a32_dispatch && ++uc->embedder_a32_dispatch_epoch == 0) {
+        memset(uc->embedder_a32_dispatch, 0,
+               UC_A32_DISPATCH_SLOTS * sizeof(*uc->embedder_a32_dispatch));
+    }
+}
+
 struct uc_context {
     size_t context_size;  // size of the real internal context structure
     uc_mode mode;         // the mode of this context

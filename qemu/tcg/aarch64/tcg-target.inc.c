@@ -2861,6 +2861,9 @@ static void tcg_target_qemu_prologue(TCGContext *s)
 #endif
 
     tcg_out_mov(s, TCG_TYPE_PTR, TCG_AREG0, tcg_target_call_iarg_regs[0]);
+    if (s->embedder_engine_ptr) {
+        tcg_out_movi(s, TCG_TYPE_PTR, TCG_REG_X28, (uintptr_t)s->uc);
+    }
     tcg_out_insn(s, 3207, BR, tcg_target_call_iarg_regs[1]);
 
     /*

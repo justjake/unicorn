@@ -540,6 +540,7 @@ uc_err uc_close(uc_engine *uc)
     uc_translation_timing_free(uc->embedder_translation_timing);
     uc->embedder_translation_timing = NULL;
 
+    free(uc->embedder_a32_dispatch);
     g_free(uc->embedder_watch);
     g_free(uc->embedder_flat[0].h);
     g_free(uc->embedder_flat[1].h);

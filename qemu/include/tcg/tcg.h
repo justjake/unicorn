@@ -697,6 +697,7 @@ struct TCGContext {
     GHashTable *helper_table;
     GHashTable *custom_helper_infos; // To support inline hooks.
     TCGv_ptr cpu_env;
+    TCGv_ptr embedder_engine_ptr;
     struct tcg_region_state region;
     GTree *tree;
     /* The translation the last tcg_tb_lookup found; NULL once it leaves the tree. */

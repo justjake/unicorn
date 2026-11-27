@@ -914,6 +914,12 @@ void tcg_prologue_init(TCGContext *s)
 #endif
 
     /* Generate the prologue.  */
+#if defined(TARGET_ARM) && !defined(TARGET_AARCH64) && defined(__aarch64__) && defined(__APPLE__) && !defined(CONFIG_TCG_INTERPRETER)
+    if (s->uc->cpu_model == UC_CPU_ARM_CORTEX_A7) {
+        TCGTemp *engine = tcg_global_reg_new_internal(s, TCG_TYPE_PTR, TCG_REG_X28, "engine");
+        s->embedder_engine_ptr = temp_tcgv_ptr(s, engine);
+    }
+#endif
     tcg_target_qemu_prologue(s);
 
 #ifdef TCG_TARGET_NEED_POOL_LABELS

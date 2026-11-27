@@ -2736,6 +2736,23 @@ static inline bool use_goto_tb(DisasContext *s, target_ulong dest)
 
 static void gen_goto_ptr(TCGContext *tcg_ctx)
 {
+#if !defined(TARGET_AARCH64) && defined(__aarch64__) && TCG_TARGET_HAS_goto_ptr && !defined(CONFIG_DEBUG_TCG)
+    struct uc_struct *uc = tcg_ctx->uc;
+
+    if (uc->cpu_model == UC_CPU_ARM_CORTEX_A7 && uc->embedder_acct.enabled == 1) {
+        if (!uc->embedder_a32_dispatch) {
+            uc->embedder_a32_dispatch = calloc(UC_A32_DISPATCH_SLOTS,
+                                               sizeof(*uc->embedder_a32_dispatch));
+        }
+        if (uc->embedder_a32_dispatch) {
+            TCGv_ptr code = tcg_temp_new_ptr(tcg_ctx);
+            gen_helper_lookup_a32_compact(tcg_ctx, code, tcg_ctx->cpu_env);
+            tcg_gen_op1i(tcg_ctx, INDEX_op_goto_ptr, tcgv_ptr_arg(tcg_ctx, code));
+            tcg_temp_free_ptr(tcg_ctx, code);
+            return;
+        }
+    }
+#endif
     tcg_gen_lookup_and_goto_ptr(tcg_ctx);
 }
 
