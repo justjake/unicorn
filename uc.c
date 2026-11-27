@@ -3850,6 +3850,12 @@ void *uc_embedder_accounting(uc_engine *uc)
     return &uc->embedder_acct;
 }
 
+UNICORN_EXPORT
+uint32_t *uc_embedder_thumb_exception_status(uc_engine *uc)
+{
+    return &uc->embedder_thumb_exception_status;
+}
+
 // embedder: block chains. One admitted run can cover several translated
 // blocks without a block hook call for each. See uc_embedder_chain in
 // uc_priv.h for the record and the entry test.

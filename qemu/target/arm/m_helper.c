@@ -7,6 +7,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "uc_priv.h"
 #include "qemu/units.h"
 #include "cpu.h"
 #include "internals.h"
@@ -2195,7 +2196,12 @@ uint32_t HELPER(v7m_mrs)(CPUARMState *env, uint32_t reg)
     unsigned el = arm_current_el(env);
 
     /* First handle registers which unprivileged can read */
-    if (reg >=0 && reg <= 7) {
+    if (reg <= 7) {
+        struct uc_struct *uc = env_cpu(env)->uc;
+        uint32_t status = uc->embedder_thumb_exception_status;
+        if ((reg & 1) && uc->embedder_acct.enabled == 4 && status) {
+            return v7m_mrs_xpsr(env, reg & ~1u, el) | (status - 1);
+        }
         return v7m_mrs_xpsr(env, reg, el);
     } else {
         switch (reg) {

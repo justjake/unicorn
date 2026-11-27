@@ -661,6 +661,9 @@ struct uc_struct {
         // Set by the embedder while an M-profile exception is active.
         uint64_t thumb_handler_mode;
     } embedder_acct;
+    // Controller-owned IPSR for an admitted Thumb window, biased by one.
+    // Zero leaves the instruction helper on the engine's own exception state.
+    uint32_t embedder_thumb_exception_status;
     // Observational host counters, never serialized in a CPU context. Entries
     // 0..6 are actual jumps by call site; 7..9 are request origins; 10..11
     // count normal TCI returns replacing the check-exit/retry jumps.
