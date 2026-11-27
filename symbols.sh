@@ -20,6 +20,7 @@ uc_init \
 uc_add_inline_hook \
 uc_del_inline_hook \
 tb_invalidate_phys_range \
+tb_invalidate_phys_page_fast \
 use_idiv_instructions \
 arm_arch \
 tb_target_set_jmp_target \
@@ -1910,6 +1911,7 @@ cpu_set_fp80 \
 "
 
 arm_SYMBOLS="
+helper_arm_embedder_uidiv_core \
 arm_cpu_exec_interrupt \
 arm_cpu_update_virq \
 arm_cpu_update_vfiq \
@@ -2618,6 +2620,7 @@ ssra_op \
 "
 
 aarch64_SYMBOLS="
+helper_arm_embedder_uidiv_core \
 cpu_aarch64_init \
 arm_cpu_exec_interrupt \
 arm_cpu_update_virq \

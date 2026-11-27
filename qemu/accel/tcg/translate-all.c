@@ -2106,6 +2106,8 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
  * !user-mode: call with all @pages locked.
  */
 static int embedder_insn_index(TranslationBlock *tb, uintptr_t retaddr);
+static bool embedder_store_precedes_code(struct uc_struct *uc, uintptr_t retaddr,
+                                          tb_page_addr_t start, int len);
 
 static void
 tb_invalidate_phys_page_range__locked(struct uc_struct *uc, struct page_collection *pages,
@@ -2283,6 +2285,32 @@ void tb_invalidate_phys_range(struct uc_struct *uc, ram_addr_t start, ram_addr_t
  *
  * Call with all @pages in the range [@start, @start + len[ locked.
  */
+/* embedder: does the running block still have to execute instructions this
+   store's bytes cover? retaddr is the storing instruction's host address; the
+   block's code range is its guest PC and size. Physical addresses are compared
+   because the block runs from checked RAM, which this processor maps
+   identity-wise. */
+static bool embedder_store_precedes_code(struct uc_struct *uc, uintptr_t retaddr,
+                                         tb_page_addr_t start, int len)
+{
+    TCGContext *tcg_ctx = uc->tcg_ctx;
+    TranslationBlock *tb = tcg_tb_lookup(tcg_ctx, retaddr);
+    int index;
+    tb_page_addr_t first;
+
+    if (!tb) {
+        return false;
+    }
+    index = embedder_insn_index(tb, retaddr);
+    if (index < 0 || index >= tb->icount - 1) {
+        return false;
+    }
+    /* A block that starts in page 1 of its first page is addressed by
+       page_addr[0]; the guest PC is the same physical address here. */
+    first = tb->page_addr[0] == -1 ? (tb_page_addr_t)tb->pc : tb->page_addr[0];
+    return start < first + tb->size && start + len > first;
+}
+
 void tb_invalidate_phys_page_fast(struct uc_struct *uc, struct page_collection *pages,
                                   tb_page_addr_t start, int len,
                                   uintptr_t retaddr)
@@ -2301,17 +2329,34 @@ void tb_invalidate_phys_page_fast(struct uc_struct *uc, struct page_collection *
         ++p->code_write_count >= SMC_BITMAP_USE_THRESHOLD) {
         build_page_bitmap(uc, p);
     }
+    bool covers_code = true;
+
     if (p->code_bitmap) {
         unsigned int nr;
         unsigned long b;
 
         nr = start & ~TARGET_PAGE_MASK;
         b = p->code_bitmap[BIT_WORD(nr)] >> (nr & (BITS_PER_LONG - 1));
-        if (b & ((1 << len) - 1)) {
-            goto do_invalidate;
+        covers_code = (b & ((1 << len) - 1)) != 0;
+    }
+    if (covers_code) {
+        /* embedder: a store covering translated bytes is the only store that
+           can have rewritten code. Tell the embedder before the invalidation
+           retires the translation, so its code watch reacts to that store
+           alone; a data store sharing the page never reaches this point. */
+        if (uc->embedder_code_store) {
+            uc->embedder_code_store(uc->embedder_code_store_user, start, len);
         }
-    } else {
-    do_invalidate:
+        /* embedder: if the bytes this store changed are still ahead of it in
+           the running block, those instructions were translated from code
+           that no longer exists. Restart the store as a block of its own; the
+           retry is then its block's only instruction and runs it once. A
+           store that changes bytes the block does not go on to execute needs
+           no restart. */
+        if (uc->embedder_restart_on_code_store && retaddr &&
+            embedder_store_precedes_code(uc, retaddr, start, len)) {
+            embedder_restart_insn(uc->cpu, retaddr, false, false);
+        }
         tb_invalidate_phys_page_range__locked(uc, pages, p, start, start + len,
                                               retaddr,
                                               UC_COUNT_INVALIDATE_GUEST_STORE);

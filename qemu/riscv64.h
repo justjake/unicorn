@@ -20,6 +20,7 @@
 #define uc_add_inline_hook uc_add_inline_hook_riscv64
 #define uc_del_inline_hook uc_del_inline_hook_riscv64
 #define tb_invalidate_phys_range tb_invalidate_phys_range_riscv64
+#define tb_invalidate_phys_page_fast tb_invalidate_phys_page_fast_riscv64
 #define use_idiv_instructions use_idiv_instructions_riscv64
 #define arm_arch arm_arch_riscv64
 #define tb_target_set_jmp_target tb_target_set_jmp_target_riscv64

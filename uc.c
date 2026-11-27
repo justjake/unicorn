@@ -3493,6 +3493,27 @@ uc_err uc_embedder_request_restart(uc_engine *uc)
     return UC_ERR_OK;
 }
 
+// embedder: install (or with callback NULL remove) the notification a guest
+// store raises when it covers bytes a translation was made from. It runs just
+// before that translation is retired, so the embedder can refresh its own copy
+// of the code. A store on the same page that covers no translated byte never
+// reports. Translations are not otherwise affected.
+UNICORN_EXPORT
+uc_err uc_embedder_set_code_store(uc_engine *uc,
+                                  void (*callback)(void *user, uint64_t address,
+                                                   int size),
+                                  void *user)
+{
+    UC_INIT(uc);
+    uc->embedder_code_store = callback;
+    uc->embedder_restart_on_code_store = callback != NULL;
+    if (callback) {
+        uc->embedder_code_store_user = user;
+    }
+    restore_jit_state(uc);
+    return UC_ERR_OK;
+}
+
 /* Invalidate every RAMBlock view that shares bytes with a host backing write.
  * This runs on the serialized engine thread and leaves any active-block
  * boundary or restart request to the caller. */

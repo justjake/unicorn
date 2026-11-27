@@ -20,6 +20,7 @@
 #define uc_add_inline_hook uc_add_inline_hook_aarch64
 #define uc_del_inline_hook uc_del_inline_hook_aarch64
 #define tb_invalidate_phys_range tb_invalidate_phys_range_aarch64
+#define tb_invalidate_phys_page_fast tb_invalidate_phys_page_fast_aarch64
 #define use_idiv_instructions use_idiv_instructions_aarch64
 #define arm_arch arm_arch_aarch64
 #define tb_target_set_jmp_target tb_target_set_jmp_target_aarch64
@@ -1303,6 +1304,7 @@
 #define tlb_reset_dirty_by_vaddr tlb_reset_dirty_by_vaddr_aarch64
 #define helper_stqcx_le_parallel helper_stqcx_le_parallel_aarch64
 #define helper_stqcx_be_parallel helper_stqcx_be_parallel_aarch64
+#define helper_arm_embedder_uidiv_core helper_arm_embedder_uidiv_core_aarch64
 #define cpu_aarch64_init cpu_aarch64_init_aarch64
 #define arm_cpu_exec_interrupt arm_cpu_exec_interrupt_aarch64
 #define arm_cpu_update_virq arm_cpu_update_virq_aarch64
@@ -1440,7 +1442,6 @@
 #define helper_uxtb16 helper_uxtb16_aarch64
 #define helper_sdiv helper_sdiv_aarch64
 #define helper_udiv helper_udiv_aarch64
-#define helper_arm_embedder_uidiv_core helper_arm_embedder_uidiv_core_aarch64
 #define helper_rbit helper_rbit_aarch64
 #define arm_phys_excp_target_el arm_phys_excp_target_el_aarch64
 #define aarch64_sync_32_to_64 aarch64_sync_32_to_64_aarch64

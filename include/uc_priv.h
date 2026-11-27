@@ -593,6 +593,16 @@ struct uc_struct {
     // the instructions before it in its block have executed, it has not.
     void (*embedder_restart)(void *user, uint64_t pc);
     void *embedder_filter_user;
+    // embedder: a guest store covered bytes a translation was made from, before
+    // that translation is retired. Called with the physical first byte and the
+    // store's width. A store on the same page that covers no translated byte
+    // never reports, so a code watch reacts only to stores that changed code.
+    void (*embedder_code_store)(void *user, uint64_t address, int size);
+    void *embedder_code_store_user;
+    // embedder: a store covering translated bytes restarts as its own block, so
+    // the instructions after it in its block, translated from the old bytes,
+    // do not run.
+    bool embedder_restart_on_code_store;
     int embedder_insn_decision;   // filter result for the instruction being translated
     GHashTable *embedder_io_pcs;  // guest PCs of instructions ending their block
     GHashTable *embedder_watched_store_pcs; // learned Thumb mode-4 store boundaries
