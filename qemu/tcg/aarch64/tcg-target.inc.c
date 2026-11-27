@@ -1412,6 +1412,27 @@ static void tcg_out_brcond(TCGContext *s, TCGType ext, TCGCond c, TCGArg a,
     }
 }
 
+#if defined(TARGET_ARM) && !defined(TARGET_AARCH64)
+static void tcg_out_mprofile_exit_check(TCGContext *s, tcg_insn_unit *helper)
+{
+    TCGLabel *call = gen_new_label(s);
+    TCGLabel *done = gen_new_label(s);
+
+    // Keep the IR call and its register synchronization. The architectural
+    // restore path still runs in the helper at the same guest instruction.
+    tcg_out_ld(s, TCG_TYPE_I32, TCG_REG_TMP, TCG_AREG0,
+               offsetof(ArchCPU, neg.icount_decr.u32) -
+               offsetof(ArchCPU, env));
+    tcg_out_brcond(s, TCG_TYPE_I32, TCG_COND_LT, TCG_REG_TMP, 0, true, call);
+    tcg_out_ld(s, TCG_TYPE_I32, TCG_REG_TMP, TCG_REG_X0,
+               offsetof(struct uc_struct, embedder_retry_limit));
+    tcg_out_brcond(s, TCG_TYPE_I32, TCG_COND_EQ, TCG_REG_TMP, 0, true, done);
+    tcg_out_label(s, call, s->code_ptr);
+    tcg_out_call(s, helper);
+    tcg_out_label(s, done, s->code_ptr);
+}
+#endif
+
 static inline void tcg_out_rev64(TCGContext *s, TCGReg rd, TCGReg rn)
 {
     tcg_out_insn(s, 3507, REV64, TCG_TYPE_I64, rd, rn);
