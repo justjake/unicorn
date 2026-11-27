@@ -914,6 +914,12 @@ void tcg_prologue_init(TCGContext *s)
 #endif
 
     /* Generate the prologue.  */
+#if defined(TARGET_ARM) && !defined(TARGET_AARCH64) && defined(__aarch64__) && defined(__APPLE__) && !defined(CONFIG_TCG_INTERPRETER)
+    if (s->uc->cpu_model == UC_CPU_ARM_CORTEX_A7) {
+        TCGTemp *engine = tcg_global_reg_new_internal(s, TCG_TYPE_PTR, TCG_REG_X28, "engine");
+        s->embedder_engine_ptr = temp_tcgv_ptr(s, engine);
+    }
+#endif
     tcg_target_qemu_prologue(s);
 
 #ifdef TCG_TARGET_NEED_POOL_LABELS
@@ -1240,6 +1246,8 @@ bool tcg_op_supported(TCGOpcode op)
 
     case INDEX_op_goto_ptr:
         return TCG_TARGET_HAS_goto_ptr;
+    case INDEX_op_a32_exact_admit:
+        return TCG_TARGET_HAS_a32_exact_admit;
 
     case INDEX_op_mov_i32:
     case INDEX_op_movi_i32:
@@ -1890,6 +1898,7 @@ void tcg_dump_op(TCGContext *s, bool have_prefs, TCGOp* op)
         switch (c) {
             case INDEX_op_set_label:
             case INDEX_op_br:
+            case INDEX_op_a32_exact_admit:
             case INDEX_op_brcond_i32:
             case INDEX_op_brcond_i64:
             case INDEX_op_brcond2_i32:
@@ -2155,6 +2164,7 @@ void tcg_op_remove(TCGContext *s, TCGOp *op)
     TCGLabel *label;
 
     switch (op->opc) {
+    case INDEX_op_a32_exact_admit:
     case INDEX_op_br:
         label = arg_label(op->args[0]);
         label->refs--;

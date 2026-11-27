@@ -1917,9 +1917,40 @@ static void tcg_out_op(TCGContext *s, TCGOpcode opc,
         break;
 
     case INDEX_op_goto_ptr:
-        tcg_out_insn(s, 3207, BR, a0);
+        if (const_args[0]) {
+            tcg_insn_unit *target = (void *)(uintptr_t)a0;
+            ptrdiff_t offset = tcg_pcrel_diff(s, target) >> 2;
+            if (offset == sextract64(offset, 0, 26)) {
+                tcg_out_insn(s, 3206, B, offset);
+            } else {
+                tcg_out_movi(s, TCG_TYPE_PTR, TCG_REG_TMP, a0);
+                tcg_out_insn(s, 3207, BR, TCG_REG_TMP);
+            }
+        } else {
+            tcg_out_insn(s, 3207, BR, a0);
+        }
         break;
 
+    case INDEX_op_a32_exact_admit: {
+        TCGLabel *slow = arg_label(a0);
+        const TCGReg engine = TCG_REG_X28;
+        const TCGReg tmp = TCG_REG_TMP;
+        const int budget = offsetof(struct uc_struct, embedder_acct.budget);
+        /* Keep admission in the reserved scratch register. Ordinary TCG
+         * branches spill a temporary that must survive the refusal edge. */
+        tcg_out_ld(s, TCG_TYPE_I64, tmp, engine,
+                   offsetof(struct uc_struct, embedder_acct.enabled));
+        tcg_out_brcond(s, TCG_TYPE_I64, TCG_COND_NE, tmp, a2, true, slow);
+        tcg_out_ld(s, TCG_TYPE_I64, tmp, engine,
+                   offsetof(struct uc_struct, embedder_acct.pause_requested));
+        tcg_out_brcond(s, TCG_TYPE_I64, TCG_COND_NE, tmp, 0, true, slow);
+        tcg_out_ld(s, TCG_TYPE_I64, tmp, engine, budget);
+        tcg_debug_assert(a1 <= 4095);
+        tcg_out_insn(s, 3401, SUBI, TCG_TYPE_I64, tmp, tmp, a1);
+        tcg_out_brcond(s, TCG_TYPE_I64, TCG_COND_LT, tmp, 0, true, slow);
+        tcg_out_st(s, TCG_TYPE_I64, tmp, engine, budget);
+        break;
+    }
     case INDEX_op_br:
         tcg_out_goto_label(s, arg_label(a0));
         break;
@@ -2565,7 +2596,7 @@ void tcg_expand_vec_op(TCGContext *tcg_ctx, TCGOpcode opc, TCGType type, unsigne
 
 static const TCGTargetOpDef *tcg_target_op_def(TCGOpcode op)
 {
-    static const TCGTargetOpDef r = { .args_ct_str = { "r" } };
+    static const TCGTargetOpDef r_i = { .args_ct_str = { "ri" } };
     static const TCGTargetOpDef r_r = { .args_ct_str = { "r", "r" } };
     static const TCGTargetOpDef w_w = { .args_ct_str = { "w", "w" } };
     static const TCGTargetOpDef w_r = { .args_ct_str = { "w", "r" } };
@@ -2597,7 +2628,7 @@ static const TCGTargetOpDef *tcg_target_op_def(TCGOpcode op)
 
     switch (op) {
     case INDEX_op_goto_ptr:
-        return &r;
+        return &r_i;
 
     case INDEX_op_ld8u_i32:
     case INDEX_op_ld8s_i32:
@@ -2828,6 +2859,96 @@ QEMU_BUILD_BUG_ON(FRAME_SIZE >= (1 << 14));
 /* We're expecting to use a single ADDI insn.  */
 QEMU_BUILD_BUG_ON(FRAME_SIZE - PUSH_SIZE > 0xfff);
 
+#if defined(TARGET_ARM) && !defined(TARGET_AARCH64) && defined(__APPLE__) && !defined(CONFIG_DEBUG_TCG)
+/* Enter after goto_ptr has committed the translated block's guest state.
+ * Use caller-saved scratch registers and jump into the destination's normal
+ * entry guard. Misses and uncommon ARM state reuse the full lookup. */
+static void tcg_emit_a32_tail_lookup(TCGContext *s)
+{
+    tcg_insn_unit *miss[4];
+    QEMU_BUILD_BUG_ON(sizeof(struct embedder_a32_target) != 32);
+    QEMU_BUILD_BUG_ON(offsetof(struct embedder_a32_target, key) != 0);
+    QEMU_BUILD_BUG_ON(offsetof(struct embedder_a32_target, epoch) != 8);
+    QEMU_BUILD_BUG_ON(offsetof(struct embedder_a32_target, code) != 16);
+    QEMU_BUILD_BUG_ON(offsetof(struct embedder_a32_target, config) != 24);
+    QEMU_BUILD_BUG_ON(offsetof(CPUARMState, condexec_bits) != offsetof(CPUARMState, thumb) + 4);
+    QEMU_BUILD_BUG_ON(offsetof(CPUARMState, vfp.vec_stride) != offsetof(CPUARMState, vfp.vec_len) + 4);
+    QEMU_BUILD_BUG_ON(R_TBFLAG_A32_VFPEN_SHIFT != 14);
+    QEMU_BUILD_BUG_ON(CF_PARALLEL != (1u << 19));
+
+    s->code_gen_a32_tail_lookup = s->code_ptr;
+    tcg_out_ld(s, TCG_TYPE_I32, TCG_REG_X0, TCG_AREG0, offsetof(CPUARMState, regs[15]));
+    tcg_out_shr(s, TCG_TYPE_I32, TCG_REG_X1, TCG_REG_X0, 2);
+    tcg_out_insn_3502S(s, I3510_EOR | (1 << 22), TCG_TYPE_I32,
+                      TCG_REG_X1, TCG_REG_X1, TCG_REG_X0, 12);
+    tcg_out_logicali(s, I3404_ANDI, TCG_TYPE_I32, TCG_REG_X1, TCG_REG_X1,
+                     UC_A32_DISPATCH_SLOTS - 1);
+    tcg_out_ld(s, TCG_TYPE_PTR, TCG_REG_X2, TCG_REG_X28,
+               offsetof(struct uc_struct, embedder_a32_dispatch));
+    tcg_out_insn_3502S(s, I3502S_ADD_LSL, TCG_TYPE_I64,
+                      TCG_REG_X1, TCG_REG_X2, TCG_REG_X1, 5);
+    tcg_out_insn(s, 3314, LDP, TCG_REG_X2, TCG_REG_X3, TCG_REG_X1, 0, 1, 0);
+    tcg_out_insn(s, 3314, LDP, TCG_REG_X4, TCG_REG_X5, TCG_REG_X1, 16, 1, 0);
+    tcg_out_ld(s, TCG_TYPE_I64, TCG_REG_X7, TCG_REG_X28,
+               offsetof(struct uc_struct, embedder_a32_dispatch_epoch));
+    tcg_out_cmp(s, TCG_TYPE_I64, TCG_REG_X3, TCG_REG_X7, false);
+    miss[0] = s->code_ptr;
+    tcg_out_insn(s, 3202, B_C, TCG_COND_NE, 0);
+
+    /* Common ARM state has neither IT state nor legacy VFP vector fields.
+     * Keep the full lookup for the other states. The cache never contains
+     * keys with AARCH64_STATE or SS_ACTIVE, where the C fast path declines. */
+    tcg_out_ld(s, TCG_TYPE_I64, TCG_REG_X7, TCG_AREG0, offsetof(CPUARMState, thumb));
+    tcg_out_ld(s, TCG_TYPE_I64, TCG_REG_X8, TCG_AREG0, offsetof(CPUARMState, vfp.vec_len));
+    tcg_out_insn(s, 3510, ORR, TCG_TYPE_I64, TCG_REG_X7, TCG_REG_X7, TCG_REG_X8);
+    miss[1] = s->code_ptr;
+    tcg_out_insn(s, 3201, CBNZ, TCG_TYPE_I64, TCG_REG_X7, 0);
+    tcg_out_ld(s, TCG_TYPE_I32, TCG_REG_X6, TCG_AREG0, offsetof(CPUARMState, hflags));
+    const uint32_t dynamic_flags = R_TBFLAG_AM32_CONDEXEC_MASK |
+        R_TBFLAG_AM32_THUMB_MASK | R_TBFLAG_A32_VECLEN_MASK |
+        R_TBFLAG_A32_VECSTRIDE_MASK;
+    tcg_out_logicali(s, I3404_ANDI, TCG_TYPE_I32, TCG_REG_X6, TCG_REG_X6,
+                     (uint32_t)~dynamic_flags);
+    tcg_out_ld(s, TCG_TYPE_I32, TCG_REG_X7, TCG_AREG0,
+               offsetof(CPUARMState, vfp.xregs[ARM_VFP_FPEXC]));
+    tcg_out_ubfm(s, TCG_TYPE_I32, TCG_REG_X7, TCG_REG_X7, 30, 30);
+    tcg_out_insn_3502S(s, I3510_ORR, TCG_TYPE_I32,
+                      TCG_REG_X6, TCG_REG_X6, TCG_REG_X7, R_TBFLAG_A32_VFPEN_SHIFT);
+    tcg_out_insn_3502S(s, I3510_ORR, TCG_TYPE_I64,
+                      TCG_REG_X0, TCG_REG_X0, TCG_REG_X6, 32);
+    tcg_out_cmp(s, TCG_TYPE_I64, TCG_REG_X0, TCG_REG_X2, false);
+    miss[2] = s->code_ptr;
+    tcg_out_insn(s, 3202, B_C, TCG_COND_NE, 0);
+
+    tcg_out_ld(s, TCG_TYPE_PTR, TCG_REG_X1, TCG_REG_X28, offsetof(struct uc_struct, cpu));
+    tcg_out_ld(s, TCG_TYPE_I32, TCG_REG_X6, TCG_REG_X1, offsetof(CPUState, cluster_index));
+    tcg_out_ldst(s, I3312_LDRB, TCG_REG_X7, TCG_REG_X1,
+                 offsetof(CPUState, embedder_parallel_cpus), 0);
+    tcg_out_ld(s, TCG_TYPE_I32, TCG_REG_X8, TCG_REG_X1, offsetof(CPUState, trace_dstate));
+    tcg_out_shl(s, TCG_TYPE_I32, TCG_REG_X6, TCG_REG_X6, CF_CLUSTER_SHIFT);
+    tcg_out_insn_3502S(s, I3510_ORR, TCG_TYPE_I32, TCG_REG_X6, TCG_REG_X6, TCG_REG_X7, 19);
+    tcg_out_insn_3502S(s, I3510_ORR, TCG_TYPE_I64, TCG_REG_X6, TCG_REG_X6, TCG_REG_X8, 32);
+    tcg_out_cmp(s, TCG_TYPE_I64, TCG_REG_X5, TCG_REG_X6, false);
+    miss[3] = s->code_ptr;
+    tcg_out_insn(s, 3202, B_C, TCG_COND_NE, 0);
+    tcg_insn_unit *empty = s->code_ptr;
+    tcg_out_insn(s, 3201, CBZ, TCG_TYPE_I64, TCG_REG_X4, 0);
+    tcg_out_insn(s, 3207, BR, TCG_REG_X4);
+
+    for (size_t i = 0; i < ARRAY_SIZE(miss); ++i) {
+        if (!patch_reloc(miss[i], R_AARCH64_CONDBR19, (intptr_t)s->code_ptr, 0)) {
+            g_assert_not_reached();
+        }
+    }
+    if (!patch_reloc(empty, R_AARCH64_CONDBR19, (intptr_t)s->code_ptr, 0)) {
+        g_assert_not_reached();
+    }
+    tcg_out_mov(s, TCG_TYPE_PTR, TCG_REG_X0, TCG_AREG0);
+    tcg_out_call(s, (tcg_insn_unit *)HELPER(lookup_a32_compact));
+    tcg_out_insn(s, 3207, BR, TCG_REG_X0);
+}
+#endif
+
 static void tcg_target_qemu_prologue(TCGContext *s)
 {
     TCGReg r;
@@ -2861,6 +2982,9 @@ static void tcg_target_qemu_prologue(TCGContext *s)
 #endif
 
     tcg_out_mov(s, TCG_TYPE_PTR, TCG_AREG0, tcg_target_call_iarg_regs[0]);
+    if (s->embedder_engine_ptr) {
+        tcg_out_movi(s, TCG_TYPE_PTR, TCG_REG_X28, (uintptr_t)s->uc);
+    }
     tcg_out_insn(s, 3207, BR, tcg_target_call_iarg_regs[1]);
 
     /*
@@ -2887,6 +3011,12 @@ static void tcg_target_qemu_prologue(TCGContext *s)
     tcg_out_insn(s, 3314, LDP, TCG_REG_FP, TCG_REG_LR,
                  TCG_REG_SP, PUSH_SIZE, 0, 1);
     tcg_out_insn(s, 3207, RET, TCG_REG_LR);
+
+#if defined(TARGET_ARM) && !defined(TARGET_AARCH64) && defined(__APPLE__) && !defined(CONFIG_DEBUG_TCG)
+    if (s->embedder_engine_ptr) {
+        tcg_emit_a32_tail_lookup(s);
+    }
+#endif
 }
 
 static void tcg_out_nop_fill(tcg_insn_unit *p, int count)

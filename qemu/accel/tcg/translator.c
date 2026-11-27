@@ -49,6 +49,7 @@ struct EmbedderBlockGuard {
     TCGOp *classifier_histogram_icount;
     TCGOp *count_low;
     TCGOp *count_high;
+    TCGOp *native_admit;
     TCGOp *size;
     TCGOp *packed;
     TCGOp *record_bytes;
@@ -230,6 +231,138 @@ static void gen_embedder_classifier_sample(TCGContext *tcg_ctx,
     tcg_temp_free_ptr(tcg_ctx, sample_ucp);
 }
 
+static TCGv_ptr gen_embedder_engine_ptr(TCGContext *tcg_ctx, struct uc_struct *uc)
+{
+    return tcg_ctx->embedder_engine_ptr
+        ? tcg_ctx->embedder_engine_ptr : tcg_const_ptr(tcg_ctx, uc);
+}
+
+static void free_embedder_engine_ptr(TCGContext *tcg_ctx, TCGv_ptr ucp)
+{
+    if (ucp != tcg_ctx->embedder_engine_ptr) {
+        tcg_temp_free_ptr(tcg_ctx, ucp);
+    }
+}
+
+#if TCG_TARGET_REG_BITS == 64
+static void gen_embedder_exact_record(TCGContext *tcg_ctx, struct uc_struct *uc,
+                                      struct EmbedderBlockGuard *guard, bool latest)
+{
+    TCGv_ptr ucp = gen_embedder_engine_ptr(tcg_ctx, uc);
+    TCGv_i64 packed = tcg_temp_new_i64(tcg_ctx);
+    tcg_gen_movi_i64(tcg_ctx, packed, 0);
+    guard->packed = tcg_last_op(tcg_ctx);
+
+    if (latest) {
+        tcg_gen_st_i64(tcg_ctx, packed, ucp, offsetof(struct uc_struct, embedder_acct.head));
+        tcg_temp_free_i64(tcg_ctx, packed);
+        free_embedder_engine_ptr(tcg_ctx, ucp);
+        return;
+    }
+
+    TCGv_i64 head = tcg_temp_new_i64(tcg_ctx);
+    TCGv_i64 mask = tcg_temp_new_i64(tcg_ctx);
+    TCGv_i64 index = tcg_temp_new_i64(tcg_ctx);
+    TCGv_ptr ring = tcg_temp_new_ptr(tcg_ctx);
+    TCGv_ptr slot = tcg_temp_new_ptr(tcg_ctx);
+
+    tcg_gen_ld_i64(tcg_ctx, head, ucp, offsetof(struct uc_struct, embedder_acct.head));
+    tcg_gen_ld_i64(tcg_ctx, mask, ucp, offsetof(struct uc_struct, embedder_acct.mask));
+    tcg_gen_ld_ptr(tcg_ctx, ring, ucp, offsetof(struct uc_struct, embedder_acct.ring));
+    tcg_gen_and_i64(tcg_ctx, index, head, mask);
+    tcg_gen_shli_i64(tcg_ctx, index, index, 3);
+    tcg_gen_trunc_i64_ptr(tcg_ctx, slot, index);
+    tcg_gen_add_ptr(tcg_ctx, slot, slot, ring);
+    tcg_gen_st_i64(tcg_ctx, packed, slot, 0);
+    tcg_gen_addi_i64(tcg_ctx, head, head, 1);
+    tcg_gen_st_i64(tcg_ctx, head, ucp, offsetof(struct uc_struct, embedder_acct.head));
+    tcg_temp_free_ptr(tcg_ctx, slot);
+    tcg_temp_free_i64(tcg_ctx, packed);
+    tcg_temp_free_ptr(tcg_ctx, ring);
+    tcg_temp_free_i64(tcg_ctx, index);
+    tcg_temp_free_i64(tcg_ctx, mask);
+    tcg_temp_free_i64(tcg_ctx, head);
+    free_embedder_engine_ptr(tcg_ctx, ucp);
+}
+#endif
+
+static bool gen_a32_exact_guard(TCGContext *tcg_ctx, struct uc_struct *uc,
+                                target_ulong pc, struct EmbedderBlockGuard *guard)
+{
+#if defined(TARGET_ARM) && !defined(TARGET_AARCH64) && defined(__aarch64__) && !defined(CONFIG_TCG_INTERPRETER)
+    /* This is the counted foreground ARMv7-A owner's exact record. Owners
+     * that install an asynchronous pause flag use the general guard. */
+    uint64_t mode = uc->embedder_acct.enabled;
+    if (uc->cpu_model != UC_CPU_ARM_CORTEX_A7 || !uc->embedder_entry_exits ||
+        uc->embedder_tb_thumb || (mode != 1 && mode != UC_EMBEDDER_EXACT_LATEST) ||
+        uc->embedder_acct.pause_requested || uc->embedder_guard_diagnostics) {
+        return false;
+    }
+    TCGLabel *helper = gen_new_label(tcg_ctx);
+    TCGLabel *body = gen_new_label(tcg_ctx);
+    TCGv_ptr ucp;
+    TCGv_i32 stop;
+    TCGv_i64 budget, refused, scratch;
+    TCGOp *before_helper;
+
+    guard->active = true;
+    guard->fast_value = tcg_const_i32(tcg_ctx, 1);
+    guard->fast = tcg_last_op(tcg_ctx);
+    tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_EQ, guard->fast_value, 0, helper);
+
+    ucp = gen_embedder_engine_ptr(tcg_ctx, uc);
+    stop = tcg_temp_new_i32(tcg_ctx);
+    tcg_gen_ld8u_i32(tcg_ctx, stop, ucp, offsetof(struct uc_struct, stop_request));
+    free_embedder_engine_ptr(tcg_ctx, ucp);
+    tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_NE, stop, 0, body);
+    tcg_temp_free_i32(tcg_ctx, stop);
+
+    if (TCG_TARGET_HAS_a32_exact_admit && tcg_ctx->embedder_engine_ptr &&
+        mode == UC_EMBEDDER_EXACT_LATEST) {
+        helper->refs++;
+        tcg_gen_op3(tcg_ctx, INDEX_op_a32_exact_admit, label_arg(helper), 0, mode);
+        guard->native_admit = tcg_last_op(tcg_ctx);
+    } else {
+        ucp = gen_embedder_engine_ptr(tcg_ctx, uc);
+        budget = tcg_temp_local_new_i64(tcg_ctx);
+        refused = tcg_temp_new_i64(tcg_ctx);
+        scratch = tcg_temp_new_i64(tcg_ctx);
+        guard->count_value = tcg_temp_new_i64(tcg_ctx);
+        tcg_gen_movi_i64(tcg_ctx, guard->count_value, 0);
+        guard->count_low = tcg_last_op(tcg_ctx);
+        tcg_gen_ld_i64(tcg_ctx, budget, ucp, offsetof(struct uc_struct, embedder_acct.budget));
+        tcg_gen_sub_i64(tcg_ctx, budget, budget, guard->count_value);
+        tcg_gen_shri_i64(tcg_ctx, refused, budget, 63);
+        tcg_gen_ld_i64(tcg_ctx, scratch, ucp, offsetof(struct uc_struct, embedder_acct.enabled));
+        tcg_gen_xori_i64(tcg_ctx, scratch, scratch, mode);
+        tcg_gen_or_i64(tcg_ctx, refused, refused, scratch);
+        tcg_gen_ld_i64(tcg_ctx, scratch, ucp, offsetof(struct uc_struct, embedder_acct.pause_requested));
+        tcg_gen_or_i64(tcg_ctx, refused, refused, scratch);
+        tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, refused, 0, helper);
+        tcg_temp_free_i64(tcg_ctx, scratch);
+        tcg_temp_free_i64(tcg_ctx, refused);
+        free_embedder_engine_ptr(tcg_ctx, ucp);
+
+        ucp = gen_embedder_engine_ptr(tcg_ctx, uc);
+        tcg_gen_st_i64(tcg_ctx, budget, ucp, offsetof(struct uc_struct, embedder_acct.budget));
+        tcg_temp_free_i64(tcg_ctx, budget);
+        free_embedder_engine_ptr(tcg_ctx, ucp);
+    }
+    gen_embedder_exact_record(tcg_ctx, uc, guard, mode == UC_EMBEDDER_EXACT_LATEST);
+    tcg_gen_br(tcg_ctx, body);
+
+    gen_set_label(tcg_ctx, helper);
+    before_helper = tcg_last_op(tcg_ctx);
+    gen_uc_tracecode(tcg_ctx, 0xf8f8f8f8, UC_HOOK_BLOCK_IDX, uc, pc);
+    guard->size = before_helper ? QTAILQ_NEXT(before_helper, link)
+                                : QTAILQ_FIRST(&tcg_ctx->ops);
+    gen_set_label(tcg_ctx, body);
+    return true;
+#else
+    return false;
+#endif
+}
+
 static void gen_embedder_block_guard(TCGContext *tcg_ctx,
                                      struct uc_struct *uc, target_ulong pc,
                                      struct EmbedderBlockGuard *guard)
@@ -252,16 +385,16 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
     // A pending stop is handled by the block-entry exit test; it must not be
     // debited as an executed block.
     TCGv_i32 stop = tcg_temp_new_i32(tcg_ctx);
-    TCGv_ptr ucp = tcg_const_ptr(tcg_ctx, uc);
+    TCGv_ptr ucp = gen_embedder_engine_ptr(tcg_ctx, uc);
     tcg_gen_ld8u_i32(tcg_ctx, stop, ucp, offsetof(struct uc_struct, stop_request));
-    tcg_temp_free_ptr(tcg_ctx, ucp);
+    free_embedder_engine_ptr(tcg_ctx, ucp);
     tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_NE, stop, 0, body);
 
     TCGv_ptr pause_requested = tcg_temp_local_new_ptr(tcg_ctx);
-    ucp = tcg_const_ptr(tcg_ctx, uc);
+    ucp = gen_embedder_engine_ptr(tcg_ctx, uc);
     tcg_gen_ld_ptr(tcg_ctx, pause_requested, ucp,
                    offsetof(struct uc_struct, embedder_acct.pause_requested));
-    tcg_temp_free_ptr(tcg_ctx, ucp);
+    free_embedder_engine_ptr(tcg_ctx, ucp);
     tcg_gen_brcondi_ptr(tcg_ctx, TCG_COND_EQ, pause_requested, 0, pause_checked);
     TCGv_i32 paused = tcg_temp_new_i32(tcg_ctx);
     tcg_gen_ld_i32(tcg_ctx, paused, pause_requested, 0);
@@ -271,10 +404,10 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
     // Coarse (2) and exact (1) accounting are translated inline; exact
     // accounting also writes its ring entry. Anything else enters the helper.
     TCGv_i64 enabled = tcg_temp_local_new_i64(tcg_ctx);
-    ucp = tcg_const_ptr(tcg_ctx, uc);
+    ucp = gen_embedder_engine_ptr(tcg_ctx, uc);
     tcg_gen_ld_i64(tcg_ctx, enabled, ucp,
                    offsetof(struct uc_struct, embedder_acct.enabled));
-    tcg_temp_free_ptr(tcg_ctx, ucp);
+    free_embedder_engine_ptr(tcg_ctx, ucp);
     if (uc->embedder_tb_thumb) {
         // Translation mode is fixed by this TB's flags and accounting mode.
         // Distinct constants keep cached mode3 and mode4 TBs isolated.
@@ -282,10 +415,10 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
         tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, enabled,
                             guard->thumb_mode, disarmed);
         TCGv_i64 thumb_page = tcg_temp_new_i64(tcg_ctx);
-        ucp = tcg_const_ptr(tcg_ctx, uc);
+        ucp = gen_embedder_engine_ptr(tcg_ctx, uc);
         tcg_gen_ld_i64(tcg_ctx, thumb_page, ucp,
                        offsetof(struct uc_struct, embedder_acct.thumb_page));
-        tcg_temp_free_ptr(tcg_ctx, ucp);
+        free_embedder_engine_ptr(tcg_ctx, ucp);
         tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, thumb_page,
                             (int64_t)(pc & ~UINT64_C(0xfff)), page_mismatch);
         tcg_temp_free_i64(tcg_ctx, thumb_page);
@@ -313,18 +446,18 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
 #endif
 
     TCGv_i64 budget = tcg_temp_local_new_i64(tcg_ctx);
-    ucp = tcg_const_ptr(tcg_ctx, uc);
+    ucp = gen_embedder_engine_ptr(tcg_ctx, uc);
     tcg_gen_ld_i64(tcg_ctx, budget, ucp,
                    offsetof(struct uc_struct, embedder_acct.budget));
-    tcg_temp_free_ptr(tcg_ctx, ucp);
+    free_embedder_engine_ptr(tcg_ctx, ucp);
     tcg_gen_sub_i64(tcg_ctx, budget, budget, guard->count_value);
     tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_LT, budget, 0, budget_miss);
-    ucp = tcg_const_ptr(tcg_ctx, uc);
+    ucp = gen_embedder_engine_ptr(tcg_ctx, uc);
     tcg_gen_st_i64(tcg_ctx, budget, ucp,
                    offsetof(struct uc_struct, embedder_acct.budget));
-    tcg_temp_free_ptr(tcg_ctx, ucp);
+    free_embedder_engine_ptr(tcg_ctx, ucp);
     if (uc->embedder_tb_thumb && guard->thumb_mode == 4) {
-        ucp = tcg_const_ptr(tcg_ctx, uc);
+        ucp = gen_embedder_engine_ptr(tcg_ctx, uc);
         TCGv_i64 start = tcg_const_i64(tcg_ctx, pc);
         tcg_gen_st_i64(tcg_ctx, start, ucp,
                        offsetof(struct uc_struct, embedder_acct.last_block_start));
@@ -342,37 +475,11 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
                        offsetof(struct uc_struct, embedder_acct.last_block_icount));
         tcg_temp_free_i32(tcg_ctx, bytes);
         tcg_temp_free_i32(tcg_ctx, icount);
-        tcg_temp_free_ptr(tcg_ctx, ucp);
+        free_embedder_engine_ptr(tcg_ctx, ucp);
     }
 #if TCG_TARGET_REG_BITS == 64
     tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, enabled, 1, body);
-    ucp = tcg_const_ptr(tcg_ctx, uc);
-    // Exact accounting: ring[head++ & mask] = start << 32 | count.
-    TCGv_i64 head = tcg_temp_new_i64(tcg_ctx);
-    TCGv_i64 mask = tcg_temp_new_i64(tcg_ctx);
-    TCGv_i64 index = tcg_temp_new_i64(tcg_ctx);
-    TCGv_ptr ring = tcg_temp_new_ptr(tcg_ctx);
-    TCGv_i64 packed = tcg_temp_new_i64(tcg_ctx);
-    tcg_gen_ld_i64(tcg_ctx, head, ucp, offsetof(struct uc_struct, embedder_acct.head));
-    tcg_gen_ld_i64(tcg_ctx, mask, ucp, offsetof(struct uc_struct, embedder_acct.mask));
-    tcg_gen_ld_ptr(tcg_ctx, ring, ucp, offsetof(struct uc_struct, embedder_acct.ring));
-    tcg_gen_and_i64(tcg_ctx, index, head, mask);
-    tcg_gen_shli_i64(tcg_ctx, index, index, 3);
-    TCGv_ptr slot = tcg_temp_new_ptr(tcg_ctx);
-    tcg_gen_trunc_i64_ptr(tcg_ctx, slot, index);
-    tcg_gen_add_ptr(tcg_ctx, slot, slot, ring);
-    tcg_gen_movi_i64(tcg_ctx, packed, 0);
-    guard->packed = tcg_last_op(tcg_ctx);
-    tcg_gen_st_i64(tcg_ctx, packed, slot, 0);
-    tcg_gen_addi_i64(tcg_ctx, head, head, 1);
-    tcg_gen_st_i64(tcg_ctx, head, ucp, offsetof(struct uc_struct, embedder_acct.head));
-    tcg_temp_free_ptr(tcg_ctx, slot);
-    tcg_temp_free_i64(tcg_ctx, packed);
-    tcg_temp_free_ptr(tcg_ctx, ring);
-    tcg_temp_free_i64(tcg_ctx, index);
-    tcg_temp_free_i64(tcg_ctx, mask);
-    tcg_temp_free_i64(tcg_ctx, head);
-    tcg_temp_free_ptr(tcg_ctx, ucp);
+    gen_embedder_exact_record(tcg_ctx, uc, guard, false);
 #endif
     tcg_gen_br(tcg_ctx, body);
 
@@ -566,7 +673,9 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
         prev_op = tcg_last_op(tcg_ctx);
         block_hook = true;
         if (uc->embedder_insn_filter) {
-            gen_embedder_block_guard(tcg_ctx, uc, db->pc_first, &embedder_guard);
+            if (!gen_a32_exact_guard(tcg_ctx, uc, db->pc_first, &embedder_guard)) {
+                gen_embedder_block_guard(tcg_ctx, uc, db->pc_first, &embedder_guard);
+            }
         } else {
             gen_uc_tracecode(tcg_ctx, 0xf8f8f8f8, UC_HOOK_BLOCK_IDX, uc,
                              db->pc_first);
@@ -775,8 +884,12 @@ _end_loop:
                                        db->tb->icount);
                 }
             }
-            tcg_set_insn_param(embedder_guard.count_low, 1,
-                               (uint32_t)db->tb->icount);
+            if (embedder_guard.native_admit) {
+                tcg_set_insn_param(embedder_guard.native_admit, 1, db->tb->icount);
+            } else {
+                tcg_set_insn_param(embedder_guard.count_low, 1,
+                                   (uint32_t)db->tb->icount);
+            }
             if (embedder_guard.count_high) {
                 tcg_set_insn_param(embedder_guard.count_high, 1, 0);
             }

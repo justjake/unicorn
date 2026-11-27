@@ -540,6 +540,7 @@ uc_err uc_close(uc_engine *uc)
     uc_translation_timing_free(uc->embedder_translation_timing);
     uc->embedder_translation_timing = NULL;
 
+    free(uc->embedder_a32_dispatch);
     g_free(uc->embedder_watch);
     g_free(uc->embedder_flat[0].h);
     g_free(uc->embedder_flat[1].h);
@@ -1290,6 +1291,17 @@ uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
         uc->exits[uc->nested_level - 1] = until;
     }
 
+#if !defined(CONFIG_TCG_INTERPRETER) && defined(__APPLE__) && \
+    defined(HAVE_PTHREAD_JIT_PROTECT) && defined(__aarch64__)
+    if (uc->nested_level == 1) {
+        uc->embedder_keep_jit_rx =
+            uc->arch == UC_ARCH_ARM && uc->cpu_model == UC_CPU_ARM_CORTEX_A7 &&
+            uc->embedder_entry_exits && uc->embedder_insn_filter &&
+            uc->embedder_acct.enabled == UC_EMBEDDER_EXACT_LATEST &&
+            !uc->embedder_acct.pause_requested && !uc->cpu->embedder_parallel_cpus &&
+            !count && !timeout;
+    }
+#endif
     if (timeout) {
         enable_emu_timer(uc, timeout * 1000); // microseconds -> nanoseconds
     }
@@ -2283,19 +2295,24 @@ static void uc_tracecode_hooks(int32_t size, uc_hook_idx index, void *handle,
         return;
     }
 
-    // embedder: exact block accounting keeps its ring write in this helper.
+    // Exact ARM accounting records the admitted span for recovery.
     // Coarse interactive accounting is debited by the translated guard, so a
     // fast block that reaches this helper has already run out of budget and
     // needs the embedder's own settlement.
     if (index == UC_HOOK_BLOCK_IDX && (size & 0x40000000) &&
-        uc->embedder_acct.enabled == 1) {
+        (uc->embedder_acct.enabled == 1 ||
+         uc->embedder_acct.enabled == UC_EMBEDDER_EXACT_LATEST)) {
         int64_t count = (size & 0x3fffffff) >> 2;
         if (uc->embedder_acct.budget >= count &&
             address >= 0 &&
             (uint64_t)address + (size & 0x3fffffff) <= (UINT64_C(1) << 32)) {
             uc->embedder_acct.budget -= count;
-            uc->embedder_acct.ring[uc->embedder_acct.head++ & uc->embedder_acct.mask] =
-                ((uint64_t)(uint32_t)address << 32) | (uint64_t)count;
+            uint64_t span = ((uint64_t)(uint32_t)address << 32) | (uint64_t)count;
+            if (uc->embedder_acct.enabled == UC_EMBEDDER_EXACT_LATEST) {
+                uc->embedder_acct.head = span;
+            } else {
+                uc->embedder_acct.ring[uc->embedder_acct.head++ & uc->embedder_acct.mask] = span;
+            }
             return;
         }
     }
@@ -3565,12 +3582,13 @@ done:
 //          instruction-opportunity histograms.
 // 1 << 29: opt-in translation repeat details split generations and observed
 //          invalidation causes.
+// 1 << 30: exact A32 mode 5 records only the newest admitted block.
 UNICORN_EXPORT
 uint32_t uc_embedder_features(void)
 {
     return 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 |
            4096 | 1u << 20 | 1u << 21 | 1u << 22 | 1u << 23 | 1u << 24 |
-           1u << 25 | 1u << 26 | 1u << 27 | 1u << 28 | 1u << 29;
+           1u << 25 | 1u << 26 | 1u << 27 | 1u << 28 | 1u << 29 | 1u << 30;
 }
 
 UNICORN_EXPORT
@@ -3665,6 +3683,26 @@ uc_err uc_embedder_set_entry_exits(uc_engine *uc, bool enabled)
     UC_INIT(uc);
     if (uc->embedder_entry_exits != enabled) {
         uc->embedder_entry_exits = enabled;
+        uc->cpu->cflags_next_tb = -1;
+        uc->tb_flush(uc);
+    }
+    restore_jit_state(uc);
+    return UC_ERR_OK;
+}
+
+/* Install the exact board owner's immutable CBAR read value. */
+UNICORN_EXPORT
+uc_err uc_embedder_set_a32_cbar(uc_engine *uc, uint32_t cbar)
+{
+    UC_INIT(uc);
+    if (uc->arch != UC_ARCH_ARM || uc->cpu_model != UC_CPU_ARM_CORTEX_A7 ||
+        uc->nested_level || (cbar & 0x7fff)) {
+        restore_jit_state(uc);
+        return UC_ERR_ARG;
+    }
+    if (!uc->embedder_a32_cbar_wired || uc->embedder_a32_cbar != cbar) {
+        uc->embedder_a32_cbar_wired = true;
+        uc->embedder_a32_cbar = cbar;
         uc->cpu->cflags_next_tb = -1;
         uc->tb_flush(uc);
     }

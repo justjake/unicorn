@@ -290,6 +290,7 @@ static void tlb_flush_by_mmuidx_async_work(CPUState *cpu, run_on_cpu_data data)
     uint16_t all_dirty, work, to_clean;
     int64_t now = get_clock_realtime();
 
+    uc_a32_dispatch_invalidate(cpu->uc);
     all_dirty = env_tlb(env)->c.dirty;
     to_clean = asked & all_dirty;
     all_dirty &= ~to_clean;

@@ -2736,6 +2736,31 @@ static inline bool use_goto_tb(DisasContext *s, target_ulong dest)
 
 static void gen_goto_ptr(TCGContext *tcg_ctx)
 {
+#if !defined(TARGET_AARCH64) && defined(__aarch64__) && TCG_TARGET_HAS_goto_ptr && !defined(CONFIG_DEBUG_TCG)
+    struct uc_struct *uc = tcg_ctx->uc;
+
+    if (uc->cpu_model == UC_CPU_ARM_CORTEX_A7 &&
+        (uc->embedder_acct.enabled == 1 ||
+         uc->embedder_acct.enabled == UC_EMBEDDER_EXACT_LATEST)) {
+        if (!uc->embedder_a32_dispatch) {
+            uc->embedder_a32_dispatch = calloc(UC_A32_DISPATCH_SLOTS,
+                                               sizeof(*uc->embedder_a32_dispatch));
+        }
+        if (uc->embedder_a32_dispatch && tcg_ctx->code_gen_a32_tail_lookup) {
+            TCGv_ptr stub = tcg_const_ptr(tcg_ctx, tcg_ctx->code_gen_a32_tail_lookup);
+            tcg_gen_op1i(tcg_ctx, INDEX_op_goto_ptr, tcgv_ptr_arg(tcg_ctx, stub));
+            tcg_temp_free_ptr(tcg_ctx, stub);
+            return;
+        }
+        if (uc->embedder_a32_dispatch) {
+            TCGv_ptr code = tcg_temp_new_ptr(tcg_ctx);
+            gen_helper_lookup_a32_compact(tcg_ctx, code, tcg_ctx->cpu_env);
+            tcg_gen_op1i(tcg_ctx, INDEX_op_goto_ptr, tcgv_ptr_arg(tcg_ctx, code));
+            tcg_temp_free_ptr(tcg_ctx, code);
+            return;
+        }
+    }
+#endif
     tcg_gen_lookup_and_goto_ptr(tcg_ctx);
 }
 
@@ -10951,9 +10976,107 @@ static bool trans_IT(DisasContext *s, arg_IT *a)
     return true;
 }
 
+#if !defined(TARGET_AARCH64) && defined(__aarch64__) && defined(__APPLE__) && !defined(CONFIG_TCG_INTERPRETER)
+static bool gen_a32_branchless_dp(DisasContext *s, uint32_t insn, unsigned cond)
+{
+    TCGContext *tcg_ctx = s->uc->tcg_ctx;
+    bool immediate = insn & (1 << 25);
+    unsigned rd = extract32(insn, 12, 4);
+    unsigned rn = extract32(insn, 16, 4);
+    unsigned rm = extract32(insn, 0, 4);
+    unsigned opcode = extract32(insn, 21, 4);
+    bool zero_lhs = opcode == 13 || opcode == 15;
+    TCGv_i32 rhs, value, zero;
+    DisasCompare cmp;
+    void (*gen)(TCGContext *, TCGv_i32, TCGv_i32, TCGv_i32);
+
+    if (!tcg_ctx->embedder_engine_ptr ||
+        s->uc->embedder_acct.enabled != UC_EMBEDDER_EXACT_LATEST ||
+        (insn & 0x0c100000) || rd == 13 || rd == 15 || rn == 15 ||
+        (zero_lhs && rn != 0) || (!immediate && (rm == 15 || (insn & 16)))) {
+        return false;
+    }
+    /* Only non-trapping data-processing instructions which preserve NZCV
+     * and do not write PC or SP. Decode other encodings through the normal
+     * predicated path. */
+    switch (opcode) {
+    case 0: gen = tcg_gen_and_i32; break;
+    case 1: gen = tcg_gen_xor_i32; break;
+    case 2: gen = tcg_gen_sub_i32; break;
+    case 3: gen = gen_rsb; break;
+    case 4: gen = tcg_gen_add_i32; break;
+    case 12: gen = tcg_gen_or_i32; break;
+    case 13: gen = NULL; break;
+    case 14: gen = tcg_gen_andc_i32; break;
+    case 15: gen = NULL; break;
+    default:
+        return false;
+    }
+
+    if (immediate) {
+        uint32_t constant = ror32(extract32(insn, 0, 8), 2 * extract32(insn, 8, 4));
+        rhs = tcg_const_i32(tcg_ctx, constant);
+    } else {
+        rhs = load_reg(s, rm);
+        gen_arm_shift_im(tcg_ctx, rhs, extract32(insn, 5, 2), extract32(insn, 7, 5), 0);
+    }
+
+    value = rhs;
+    if (opcode != 13) {
+        value = tcg_temp_new_i32(tcg_ctx);
+        if (opcode == 15) {
+            tcg_gen_not_i32(tcg_ctx, value, rhs);
+        } else {
+            gen(tcg_ctx, value, tcg_ctx->cpu_R[rn], rhs);
+        }
+        tcg_temp_free_i32(tcg_ctx, rhs);
+    }
+
+    arm_test_cc(tcg_ctx, &cmp, cond);
+    zero = tcg_const_i32(tcg_ctx, 0);
+    tcg_gen_movcond_i32(tcg_ctx, cmp.cond, tcg_ctx->cpu_R[rd],
+                        cmp.value, zero, value, tcg_ctx->cpu_R[rd]);
+    tcg_temp_free_i32(tcg_ctx, zero);
+    arm_free_cc(tcg_ctx, &cmp);
+    tcg_temp_free_i32(tcg_ctx, value);
+    return true;
+}
+#endif
+
 /*
  * Legacy decoder.
  */
+
+static bool gen_embedder_a32_cbar(DisasContext *s, uint32_t insn)
+{
+    struct uc_struct *uc = s->uc;
+    unsigned rd = extract32(insn, 12, 4);
+    if (!(uc->embedder_insn_decision & 64) ||
+        uc->embedder_acct.enabled != UC_EMBEDDER_EXACT_LATEST ||
+        !uc->embedder_a32_cbar_wired || rd == 15 ||
+        (insn & 0xffff0fff) != 0xee9f0f10) {
+        return false;
+    }
+
+    /* Preserve the existing instruction path when another code observer
+     * matches this address. Only the sole owner's internal hook is elided. */
+    struct hook *hook;
+    unsigned matching = 0;
+    HOOK_FOREACH_VAR_DECLARE;
+    HOOK_FOREACH(uc, hook, UC_HOOK_CODE) {
+        if (HOOK_BOUND_CHECK(hook, s->pc_curr)) {
+            matching++;
+        }
+    }
+    if (matching != 1) {
+        return false;
+    }
+
+    TCGContext *tcg_ctx = uc->tcg_ctx;
+    tcg_gen_movi_i32(tcg_ctx, tcg_ctx->cpu_R[rd], uc->embedder_a32_cbar);
+    uc->embedder_insn_decision &= 4;
+    return true;
+}
 
 static void disas_arm_insn(DisasContext *s, unsigned int insn)
 {
@@ -10967,6 +11090,10 @@ static void disas_arm_insn(DisasContext *s, unsigned int insn)
     if (arm_dc_feature(s, ARM_FEATURE_M)) {
         gen_exception_insn(s, s->pc_curr, EXCP_INVSTATE, syn_uncategorized(),
                            default_exception_el(s));
+        return;
+    }
+
+    if (gen_embedder_a32_cbar(s, insn)) {
         return;
     }
 
@@ -11050,6 +11177,11 @@ static void disas_arm_insn(DisasContext *s, unsigned int insn)
         goto illegal_op;
     }
     if (cond != 0xe) {
+#if !defined(TARGET_AARCH64) && defined(__aarch64__) && defined(__APPLE__) && !defined(CONFIG_TCG_INTERPRETER)
+        if (gen_a32_branchless_dp(s, insn, cond)) {
+            return;
+        }
+#endif
         /* if not always execute, we generate a conditional jump to
            next instruction */
         arm_skip_unless(s, cond);

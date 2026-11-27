@@ -191,6 +191,55 @@ void *HELPER(lookup_tb_ptr)(CPUArchState *env)
     return tb->tc.ptr;
 }
 
+#if defined(TARGET_ARM) && !defined(TARGET_AARCH64) && defined(__aarch64__)
+/* Keep lookup, code translation and the uncommon complete ARM state out of
+ * the hit path so it can return without building a stack frame. */
+static QEMU_NOINLINE void *lookup_a32_miss(CPUState *cpu, target_ulong pc,
+                                         uint32_t flags, uint64_t config,
+                                         struct embedder_a32_target *entry)
+{
+    struct uc_struct *uc = cpu->uc;
+    TranslationBlock *tb;
+
+    tb = tb_lookup__state(cpu, pc, 0, flags, (uint32_t)config);
+    if (!tb) {
+        entry->code = 0;
+        return uc->tcg_ctx->code_gen_epilogue;
+    }
+    entry->key = ((uint64_t)flags << 32) | pc;
+    entry->epoch = uc->embedder_a32_dispatch_epoch;
+    entry->config = config;
+    entry->code = (uintptr_t)tb->tc.ptr;
+    return tb->tc.ptr;
+}
+
+void *HELPER(lookup_a32_compact)(CPUArchState *env)
+{
+    CPUState *cpu = env_cpu(env);
+    struct uc_struct *uc = cpu->uc;
+    struct embedder_a32_target *entry;
+    target_ulong pc;
+    uint32_t flags, cflags;
+    uint64_t key, config, code;
+    unsigned slot;
+
+    if (unlikely(!arm_tb_state_fast(env, &pc, &flags))) {
+        return HELPER(lookup_tb_ptr)(env);
+    }
+    cflags = curr_cflags(cpu) | ((uint32_t)cpu->cluster_index << CF_CLUSTER_SHIFT);
+    key = ((uint64_t)flags << 32) | pc;
+    config = ((uint64_t)*cpu->trace_dstate << 32) | cflags;
+    slot = ((pc >> 2) ^ (pc >> 12)) & (UC_A32_DISPATCH_SLOTS - 1);
+    entry = &uc->embedder_a32_dispatch[slot];
+    code = entry->code;
+    if (likely(code && entry->key == key && entry->config == config &&
+               entry->epoch == uc->embedder_a32_dispatch_epoch)) {
+        return (void *)(uintptr_t)code;
+    }
+    return lookup_a32_miss(cpu, pc, flags, config, entry);
+}
+#endif
+
 void HELPER(exit_atomic)(CPUArchState *env)
 {
     cpu_loop_exit_atomic(env_cpu(env), GETPC());
@@ -213,7 +262,7 @@ void HELPER(check_exit_request)(void *p, uint32_t in_delay_slot) {
             return;
 #else
             uc->embedder_exit_site = UC_EXIT_RETRY_JUMP;
-            if (uc->nested_level == 1) {
+            if (uc->nested_level == 1 && !uc_embedder_keep_jit_rx(uc)) {
                 tb_exec_unlock(uc);
             }
             cpu_loop_exit_restore(uc->cpu, GETPC());
@@ -240,7 +289,7 @@ void HELPER(check_exit_request)(void *p, uint32_t in_delay_slot) {
         // There are stil something we have to before exiting to be compatible with previous behaviors
 
         // from cpu_tb_exec
-        if (uc->nested_level == 1) {
+        if (uc->nested_level == 1 && !uc_embedder_keep_jit_rx(uc)) {
             // Only unlock (allow writing to JIT area) if we are the outmost uc_emu_start
             tb_exec_unlock(uc);
         }

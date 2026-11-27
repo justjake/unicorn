@@ -1535,6 +1535,7 @@ static void do_tb_flush(CPUState *cpu, run_on_cpu_data tb_flush_count)
     qht_reset_size(cpu->uc, &cpu->uc->tcg_ctx->tb_ctx.htable, CODE_GEN_HTABLE_SIZE);
     page_flush_tb(cpu->uc);
 
+    uc_a32_dispatch_invalidate(cpu->uc);
     tcg_region_reset_all(cpu->uc->tcg_ctx);
     uc_embedder_chain_flush(cpu->uc);
     cpu->uc->embedder_exit_counters[UC_COUNT_TRANSLATION_FLUSHES]++;
@@ -1672,6 +1673,7 @@ static void do_tb_phys_invalidate(TCGContext *tcg_ctx, TranslationBlock *tb,
     uc->embedder_exit_counters[cause]++;
     /* Cached indirect targets may name this translation. */
     uc->embedder_tb_epoch++;
+    uc_a32_dispatch_invalidate(uc);
     assert_memory_lock();
     code_gen_locked = tb_exec_is_locked(uc);
     tb_exec_unlock(uc);
@@ -2569,6 +2571,7 @@ void tb_flush_jmp_cache(CPUState *cpu, target_ulong addr)
 
     /* Discard jump cache entries for any tb which might potentially
        overlap the flushed page.  */
+    uc_a32_dispatch_invalidate(cpu->uc);
     tb_jmp_cache_clear_page(cpu, addr - TARGET_PAGE_SIZE);
     tb_jmp_cache_clear_page(cpu, addr);
 }

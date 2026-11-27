@@ -56,9 +56,14 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
     uint8_t *tb_ptr = itb->tc.ptr;
 
     UC_TRACE_START(UC_TRACE_TB_EXEC);
-    tb_exec_lock(cpu->uc);
+    /* Translation, link patching and invalidation open their own write windows.
+     * A foreground counted run can keep the thread protected between them. */
+    bool keep_jit_rx = uc_embedder_keep_jit_rx(cpu->uc);
+    if (!keep_jit_rx || !cpu->uc->current_executable) {
+        tb_exec_lock(cpu->uc);
+    }
     ret = tcg_qemu_tb_exec(env, tb_ptr);
-    if (cpu->uc->nested_level == 1) {
+    if (cpu->uc->nested_level == 1 && !keep_jit_rx) {
         // Only unlock (allow writing to JIT area) if we are the outmost uc_emu_start
         tb_exec_unlock(cpu->uc);
     }

@@ -32,6 +32,10 @@
 #include "qemu/queue.h"
 #include "tcg/tcg-mo.h"
 #include "tcg-target.h"
+
+#ifndef TCG_TARGET_HAS_a32_exact_admit
+#define TCG_TARGET_HAS_a32_exact_admit 0
+#endif
 #include "tcg-apple-jit.h"
 #include "qemu/int128.h"
 
@@ -648,6 +652,7 @@ struct TCGContext {
        extension that allows arithmetic on void*.  */
     void *code_gen_prologue;
     void *code_gen_epilogue;
+    void *code_gen_a32_tail_lookup;
     void *code_gen_buffer;
     void *initial_buffer;
     size_t initial_buffer_size;
@@ -697,6 +702,7 @@ struct TCGContext {
     GHashTable *helper_table;
     GHashTable *custom_helper_infos; // To support inline hooks.
     TCGv_ptr cpu_env;
+    TCGv_ptr embedder_engine_ptr;
     struct tcg_region_state region;
     GTree *tree;
     /* The translation the last tcg_tb_lookup found; NULL once it leaves the tree. */

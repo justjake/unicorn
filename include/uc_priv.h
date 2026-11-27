@@ -350,6 +350,8 @@ typedef struct uc_backing_observer {
     } \
 } while (0)
 
+#define UC_EMBEDDER_EXACT_LATEST 5
+
 // embedder: block chains. The record the embedder shares with translated
 // code (uc_embedder_block_chain). The embedder reads and writes it from hooks
 // and while no emulation runs.
@@ -557,6 +559,8 @@ struct uc_struct {
     uint64_t nested; // the nested level of all exposed API
     bool thread_executable_entry;
     bool current_executable;
+    /* The outer counted run leaves code protected between code updates. */
+    bool embedder_keep_jit_rx;
     bool skip_sync_pc_on_exit;
     // embedder: do not restore the guest PC before UC_HOOK_MEM_WRITE callbacks
     bool embedder_write_hook_no_pc_sync;
@@ -604,6 +608,8 @@ struct uc_struct {
     // handles retries and exits that restore PC) but calls it only when a
     // request or retry is pending, and omits the per-access helpers.
     bool embedder_entry_exits;
+    bool embedder_a32_cbar_wired;
+    uint32_t embedder_a32_cbar;
     bool embedder_instruction_counter;
     bool embedder_guard_diagnostics;
     // Why a translated block was made slow: classifier refusal or another
@@ -619,6 +625,8 @@ struct uc_struct {
     // enabled == 1 the helper also pushes (start << 32 | count) to the ring;
     // with enabled == 2 the ring is not written. Thumb modes 3 and 4 use the
     // enabled page in thumb_page; mode 4 also records each admitted block.
+    // UC_EMBEDDER_EXACT_LATEST stores the newest packed span in head instead.
+    // The owner clears head at settlement and uses mode 1 for entry history.
     struct {
         int64_t budget;
         uint64_t head;
@@ -644,6 +652,19 @@ struct uc_struct {
     bool tci_return_pending; // TCI helper asks for an unchained return
     /* Bumped whenever a translation dies, so cached targets can be dropped. */
     uint64_t embedder_tb_epoch;
+    /* Indirect targets for the counted native AArch32 backend. */
+    uint64_t embedder_a32_dispatch_epoch;
+#if defined(__APPLE__) && defined(__aarch64__)
+#define UC_A32_DISPATCH_SLOTS 32768
+#else
+#define UC_A32_DISPATCH_SLOTS 2048
+#endif
+    struct embedder_a32_target {
+        uint64_t key;
+        uint64_t epoch;
+        uint64_t code;
+        uint64_t config;
+    } *embedder_a32_dispatch;
     /* A short-descriptor walk may have cached a non-global translation.
      * Clear this only once all TLB modes are clean. */
     bool embedder_ng_cached;
@@ -699,6 +720,15 @@ struct uc_struct {
 };
 
 // Metadata stub for the variable-size cpu context used with uc_context_*()
+/* Invalidate cached targets when executable mappings or translations change. */
+static inline void uc_a32_dispatch_invalidate(struct uc_struct *uc)
+{
+    if (uc->embedder_a32_dispatch && ++uc->embedder_a32_dispatch_epoch == 0) {
+        memset(uc->embedder_a32_dispatch, 0,
+               UC_A32_DISPATCH_SLOTS * sizeof(*uc->embedder_a32_dispatch));
+    }
+}
+
 struct uc_context {
     size_t context_size;  // size of the real internal context structure
     uc_mode mode;         // the mode of this context
@@ -785,6 +815,17 @@ static inline void hooked_regions_check(uc_engine *uc, uint64_t start,
     hooked_regions_check_single(uc->hook[UC_HOOK_CODE_IDX].head, start, length);
     hooked_regions_check_single(uc->hook[UC_HOOK_BLOCK_IDX].head, start,
                                 length);
+}
+
+static inline bool uc_embedder_keep_jit_rx(const uc_engine *uc)
+{
+#if !defined(CONFIG_TCG_INTERPRETER) && defined(__APPLE__) && \
+    defined(HAVE_PTHREAD_JIT_PROTECT) && defined(__aarch64__)
+    return uc->embedder_keep_jit_rx && uc->nested_level == 1;
+#else
+    (void)uc;
+    return false;
+#endif
 }
 
 /*
