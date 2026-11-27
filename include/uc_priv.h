@@ -500,6 +500,12 @@ struct uc_struct {
     bool init_tcg;       // already initialized local TCGv variables?
     bool stop_request;   // request to immediately stop emulation - for
                          // uc_emu_stop()
+    // embedder: a stop request that outlives the run it was raised in. The
+    // owner may raise it before, or concurrently with, the next uc_emu_start;
+    // that call consumes it atomically and returns before executing. Reading
+    // it from another thread is why it is atomic rather than part of
+    // stop_request.
+    uint32_t pending_stop;
     bool quit_request;   // request to quit the current TB, but continue to
                          // emulate - for uc_mem_protect()
     bool emulation_done; // emulation is done by uc_emu_start()

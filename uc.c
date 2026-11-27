@@ -1155,6 +1155,19 @@ uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
         UC_INIT(uc);
     }
 
+    // embedder: a stop raised before this call is still outstanding, including
+    // one raised between this call's entry and the first guest instruction.
+    // Consume it atomically and return without entering a translation: the
+    // owner asked for the processor to stay stopped, and the PC still names
+    // the block that did not run. The nested level is untouched, as it was
+    // never advanced.
+    if (uc->nested_level == 0 &&
+        __atomic_exchange_n(&uc->pending_stop, 0, __ATOMIC_ACQUIRE)) {
+        uc->stop_request = false;
+        uc->emulation_done = true;
+        return UC_ERR_OK;
+    }
+
     // Advance the nested levels. We must decrease the level count by one when
     // we return from uc_emu_start.
     if (uc->nested_level >= UC_MAX_NESTED_LEVEL) {
@@ -1331,6 +1344,15 @@ uc_err uc_emu_stop(uc_engine *uc)
 {
     uc->embedder_exit_counters[UC_EXIT_STOP_REQUEST]++;
     UC_INIT(uc);
+    // embedder: a stop raised outside a run must survive into the next
+    // uc_emu_start, which otherwise clears stop_request and would lose it. A
+    // stop raised from inside a run (budget exhaustion, a hook, a register
+    // write) is already carried by stop_request and cpu_exit, and must not
+    // leak into the following run. The nested level is nonzero only inside
+    // uc_emu_start.
+    if (uc->nested_level == 0) {
+        __atomic_store_n(&uc->pending_stop, 1, __ATOMIC_RELEASE);
+    }
     uc->stop_request = true;
     uc_err err = break_translation_loop(uc);
     restore_jit_state(uc);
