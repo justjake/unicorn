@@ -654,7 +654,11 @@ struct uc_struct {
     uint64_t embedder_tb_epoch;
     /* Indirect targets for the counted native AArch32 backend. */
     uint64_t embedder_a32_dispatch_epoch;
+#if defined(__APPLE__) && defined(__aarch64__)
+#define UC_A32_DISPATCH_SLOTS 32768
+#else
 #define UC_A32_DISPATCH_SLOTS 2048
+#endif
     struct embedder_a32_target {
         uint64_t key;
         uint64_t epoch;
