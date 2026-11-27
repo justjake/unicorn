@@ -21,6 +21,12 @@ enum uc_translation_repeat_counter {
                               UC_TRANSLATION_REPEAT_CAUSE_COUNT * 2
 };
 
+/* `CF_LAST_IO` of exec-all.h, whose guest CPU headers this host-only file
+   cannot include; the timing key stores the same cflags bits. */
+#define UC_TRANSLATION_CF_LAST_IO 0x00008000u
+/* `CF_COUNT_MASK`: the caller asked for at most this many instructions. */
+#define UC_TRANSLATION_CF_COUNT_MASK 0x00007fffu
+
 #define UC_TRANSLATION_INVALIDATION_UNOBSERVED 0
 #define UC_TRANSLATION_INVALIDATION_AMBIGUOUS UINT32_MAX
 
@@ -35,9 +41,11 @@ struct UcTranslationTiming {
     UcTranslationTimingSlot *slots;
     uint64_t generation;
     uint64_t repeat_counters[UC_REPEAT_COUNTER_COUNT];
+    uint64_t generation_counters[UC_GENERATION_COUNT * 2];
 };
 
 static const uint64_t uc_translation_timing_zero_counters[UC_REPEAT_COUNTER_COUNT];
+static const uint64_t uc_translation_timing_zero_generations[UC_GENERATION_COUNT * 2];
 
 static uint64_t uc_translation_timing_hash(const UcTranslationTimingKey *key)
 {
@@ -125,6 +133,7 @@ void uc_translation_timing_record(struct uc_struct *uc,
     uint64_t hash = uc_translation_timing_hash(key);
     unsigned int index = hash & UC_TRANSLATION_TIMING_TABLE_MASK;
     unsigned int probe;
+    unsigned int generation_cause;
     enum uc_embedder_exit_counter count;
     enum uc_embedder_exit_counter duration;
 
@@ -139,6 +148,7 @@ void uc_translation_timing_record(struct uc_struct *uc,
             slot->last_generation = timing->generation;
             slot->invalidation_cause = UC_TRANSLATION_INVALIDATION_UNOBSERVED;
             slot->occupied = true;
+            generation_cause = UC_GENERATION_FIRST;
             count = UC_COUNT_TRANSLATION_FIRST_LOOKUP_KEY;
             duration = UC_COUNT_TRANSLATION_FIRST_LOOKUP_KEY_NS;
             goto record;
@@ -149,10 +159,16 @@ void uc_translation_timing_record(struct uc_struct *uc,
             count = UC_COUNT_TRANSLATION_REPEATED_LOOKUP_KEY;
             duration = UC_COUNT_TRANSLATION_REPEATED_LOOKUP_KEY_NS;
             if (slot->last_generation != timing->generation) {
+                generation_cause = UC_GENERATION_AFTER_FLUSH;
                 uc_translation_timing_count(
                     timing->repeat_counters,
                     UC_REPEAT_ACROSS_GLOBAL_FLUSH_COUNT, elapsed_ns);
             } else {
+                generation_cause =
+                    slot->invalidation_cause ==
+                            UC_TRANSLATION_INVALIDATION_UNOBSERVED
+                        ? UC_GENERATION_CACHED_VARIANT
+                        : UC_GENERATION_AFTER_INVALIDATION;
                 uc_translation_timing_count(
                     timing->repeat_counters,
                     UC_REPEAT_SAME_GENERATION_COUNT, elapsed_ns);
@@ -179,8 +195,16 @@ void uc_translation_timing_record(struct uc_struct *uc,
 
     count = UC_COUNT_TRANSLATION_UNTRACKED_LOOKUP_KEY;
     duration = UC_COUNT_TRANSLATION_UNTRACKED_LOOKUP_KEY_NS;
+    generation_cause = UC_GENERATION_CACHED_VARIANT;
 
 record:
+    if ((key->cflags & UC_TRANSLATION_CF_LAST_IO) != 0) {
+        generation_cause = UC_GENERATION_LAST_IO;
+    } else if ((key->cflags & UC_TRANSLATION_CF_COUNT_MASK) != 0) {
+        generation_cause = UC_GENERATION_LIMITED;
+    }
+    uc_translation_timing_count(timing->generation_counters,
+                                generation_cause * 2, elapsed_ns);
     uc->embedder_exit_counters[count]++;
     uc->embedder_exit_counters[duration] += elapsed_ns;
 }
@@ -240,4 +264,15 @@ const uint64_t *uc_translation_timing_repeat_counters(struct uc_struct *uc,
     return uc->embedder_translation_timing
                ? uc->embedder_translation_timing->repeat_counters
                : uc_translation_timing_zero_counters;
+}
+
+const uint64_t *uc_translation_timing_generation_counters(struct uc_struct *uc,
+                                                          size_t *count)
+{
+    if (count) {
+        *count = UC_GENERATION_COUNT * 2;
+    }
+    return uc->embedder_translation_timing
+               ? uc->embedder_translation_timing->generation_counters
+               : uc_translation_timing_zero_generations;
 }
