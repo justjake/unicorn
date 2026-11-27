@@ -11777,6 +11777,9 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         embedder_decision = uc->embedder_insn_filter(uc->embedder_filter_user,
                                                      dc->base.pc_next - insn_size,
                                                      insn);
+        if (embedder_decision & 32) {
+            uc->embedder_tb_thread_only = true;
+        }
         if (embedder_decision & 4) {
             if (uc->embedder_guard_diagnostics &&
                 !uc->embedder_tb_slow_reason) {

@@ -613,6 +613,7 @@ struct uc_struct {
     bool embedder_keep_code_caches; // a flush that leaves the guest mapping alone keeps jump caches
     bool embedder_code_stale; // a store rewrote the rest of the running block; the next instruction hook restarts there
     bool embedder_tb_thumb;        // Thumb state of the block being translated
+    bool embedder_tb_thread_only;  // the filter admits the block only in Thread Mode
     bool embedder_tb_slow;         // the filter asked for the block hook on every entry
     // embedder: block-exit mode tests requests inline at block entry and omits
     // per-access helpers; exact mode keeps the memory-access exit checks.
@@ -657,6 +658,8 @@ struct uc_struct {
         // (1024 x 1 KiB pages = 1 MiB). Bit `page = pc >> 10` lives at
         // thumb_page_bitmap[page >> 6] & (1ULL << (page & 63)).
         uint64_t thumb_page_bitmap[16];
+        // Set by the embedder while an M-profile exception is active.
+        uint64_t thumb_handler_mode;
     } embedder_acct;
     // Observational host counters, never serialized in a CPU context. Entries
     // 0..6 are actual jumps by call site; 7..9 are request origins; 10..11

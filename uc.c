@@ -3621,15 +3621,18 @@ done:
 //          instruction-opportunity histograms.
 // 1 << 29: opt-in translation repeat details split generations and observed
 //          invalidation causes.
-// 1 << 30: Thumb accounting appends a 256-bit proven-page bitmap covering
-//          0x0000_0000..0x0010_0000 (256 x 4 KiB pages); addresses >= 0x100000
+// 1 << 30: Thumb accounting appends a 1024-bit proven-page bitmap covering
+//          0x0000_0000..0x0010_0000 (1024 x 1 KiB pages); addresses >= 0x100000
 //          continue to check thumb_page.
+// 1 << 31: mode 4 supports the translation filter's Thread Mode-only bit (32)
+//          and appends thumb_handler_mode.
 UNICORN_EXPORT
 uint32_t uc_embedder_features(void)
 {
     return 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 |
            4096 | 1u << 20 | 1u << 21 | 1u << 22 | 1u << 23 | 1u << 24 |
-           1u << 25 | 1u << 26 | 1u << 27 | 1u << 28 | 1u << 29 | 1u << 30;
+           1u << 25 | 1u << 26 | 1u << 27 | 1u << 28 | 1u << 29 | 1u << 30 |
+           1u << 31;
 }
 
 UNICORN_EXPORT
