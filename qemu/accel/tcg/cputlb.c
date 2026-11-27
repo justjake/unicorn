@@ -622,6 +622,19 @@ void tlb_protect_code(struct uc_struct *uc, ram_addr_t ram_addr)
 {
     cpu_physical_memory_test_and_clear_dirty(ram_addr, TARGET_PAGE_SIZE,
                                              DIRTY_MEMORY_CODE);
+#if defined(TARGET_ARM) && !defined(TARGET_AARCH64)
+    if ((uc->mode & UC_MODE_MCLASS) && !uc->snapshot_level) {
+        void *host = qemu_map_ram_ptr(uc, NULL, ram_addr);
+        ram_addr_t offset;
+        RAMBlock *block = qemu_ram_block_from_host(uc, host, false, &offset);
+
+        if (block && !(block->flags & RAM_PREALLOC)) {
+            // Data may already have a writable TLB entry through another
+            // processor view. Protect by backing pointer before code runs.
+            tlb_reset_dirty(uc->cpu, (uintptr_t)host, TARGET_PAGE_SIZE);
+        }
+    }
+#endif
 }
 
 /* update the TLB so that writes in physical page 'phys_addr' are no longer
@@ -1084,6 +1097,14 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
         if (prot & PAGE_WRITE) {
             if (section->readonly) {
                 write_address |= TLB_DISCARD_WRITE;
+#if defined(TARGET_ARM) && !defined(TARGET_AARCH64)
+            } else if ((cpu->uc->mode & UC_MODE_MCLASS) &&
+                       !cpu->uc->snapshot_level &&
+                       !(section->mr->ram_block->flags & RAM_PREALLOC)) {
+                if (tb_ram_page_has_code(cpu->uc, iotlb)) {
+                    write_address |= TLB_NOTDIRTY;
+                }
+#endif
             } else if (cpu_physical_memory_is_clean(iotlb)) {
                 /* embedder: an embedder that declares code watches watches
                    every page it sees translated, in every engine and alias, so

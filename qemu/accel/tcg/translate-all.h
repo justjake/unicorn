@@ -23,6 +23,9 @@
 
 
 /* translate-all.c */
+#if defined(TARGET_ARM) && !defined(TARGET_AARCH64)
+bool tb_ram_page_has_code(struct uc_struct *uc, ram_addr_t address);
+#endif
 struct page_collection *page_collection_lock(struct uc_struct *uc, tb_page_addr_t start,
                                              tb_page_addr_t end);
 void page_collection_unlock(struct page_collection *set);

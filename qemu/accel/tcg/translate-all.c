@@ -542,6 +542,14 @@ static inline PageDesc *page_find(struct uc_struct *uc, tb_page_addr_t index)
     return page_find_alloc(uc, index, 0);
 }
 
+#if defined(TARGET_ARM) && !defined(TARGET_AARCH64)
+bool tb_ram_page_has_code(struct uc_struct *uc, ram_addr_t address)
+{
+    PageDesc *page = page_find(uc, address >> TARGET_PAGE_BITS);
+    return page && page->first_tb;
+}
+#endif
+
 static void page_lock_pair(struct uc_struct *uc, PageDesc **ret_p1, tb_page_addr_t phys1,
                            PageDesc **ret_p2, tb_page_addr_t phys2, int alloc);
 
