@@ -11629,49 +11629,6 @@ static void arm_post_translate_insn(DisasContext *dc)
     translator_loop_temp_check(&dc->base);
 }
 
-static bool arm_match_embedder_uidiv_core(DisasContext *dc, CPUARMState *env,
-                                          uint32_t first_insn)
-{
-    static const uint32_t pattern[33] = {
-        0xe311020eu, 0x01a01181u, 0x03a03008u, 0x13a03001u,
-        0xe3510201u, 0x31510000u, 0x31a01201u, 0x31a03203u,
-        0x3afffffau, 0xe3510102u, 0x31510000u, 0x31a01081u,
-        0x31a03083u, 0x3afffffau, 0xe3a02000u, 0xe1500001u,
-        0x20400001u, 0x21822003u, 0xe15000a1u, 0x204000a1u,
-        0x218220a3u, 0xe1500121u, 0x20400121u, 0x21822123u,
-        0xe15001a1u, 0x204001a1u, 0x218221a3u, 0xe3500000u,
-        0x11b03223u, 0x11a01221u, 0x1affffefu, 0xe1a00002u,
-        0xe12fff1eu,
-    };
-    struct uc_struct *uc = dc->uc;
-    if (first_insn != pattern[0] || dc->base.num_insns != 1 ||
-        dc->base.max_insns < 9 || dc->thumb || dc->sctlr_b ||
-        is_singlestepping(dc) || uc->embedder_chains) {
-        return false;
-    }
-    if ((dc->pc_curr & (TARGET_PAGE_SIZE - 1)) + sizeof(pattern) > TARGET_PAGE_SIZE) {
-        return false;
-    }
-    for (unsigned i = 0; i < 33; i++) {
-        uint32_t addr = (uint32_t)(dc->pc_curr + i * 4u);
-        if (uc_addr_is_exit(uc, addr)) {
-            return false;
-        }
-        uint32_t word = (i == 0) ? first_insn : arm_ldl_code(env, addr, false);
-        if (uc->invalid_error || word != pattern[i]) {
-            return false;
-        }
-        if (uc->embedder_insn_filter) {
-            if (uc->embedder_insn_filter(uc->embedder_filter_user, addr, word) != 0) {
-                return false;
-            }
-        } else if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_CODE, addr)) {
-            return false;
-        }
-    }
-    return true;
-}
-
 static void arm_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 {
     DisasContext *dc = container_of(dcbase, DisasContext, base);
@@ -11705,17 +11662,6 @@ static void arm_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         if (dc->uc->invalid_error) {
             dcbase->is_jmp = DISAS_WFI;
             return;
-        }
-
-        if (unlikely(arm_match_embedder_uidiv_core(dc, env, insn))) {
-            TCGContext *tcg_ctx = dc->uc->tcg_ctx;
-            TCGLabel *fallback = gen_new_label(tcg_ctx);
-            TCGv_i32 done = tcg_temp_new_i32(tcg_ctx);
-            gen_helper_arm_embedder_uidiv_core(tcg_ctx, done, tcg_ctx->cpu_env);
-            tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_EQ, done, 0, fallback);
-            tcg_temp_free_i32(tcg_ctx, done);
-            gen_goto_ptr(dc, false, 0);
-            gen_set_label(tcg_ctx, fallback);
         }
 
         dc->base.pc_next += 4;
