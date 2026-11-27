@@ -11047,6 +11047,37 @@ static bool gen_a32_branchless_dp(DisasContext *s, uint32_t insn, unsigned cond)
  * Legacy decoder.
  */
 
+static bool gen_embedder_a32_cbar(DisasContext *s, uint32_t insn)
+{
+    struct uc_struct *uc = s->uc;
+    unsigned rd = extract32(insn, 12, 4);
+    if (!(uc->embedder_insn_decision & 64) ||
+        uc->embedder_acct.enabled != UC_EMBEDDER_EXACT_LATEST ||
+        !uc->embedder_a32_cbar_wired || rd == 15 ||
+        (insn & 0xffff0fff) != 0xee9f0f10) {
+        return false;
+    }
+
+    /* Preserve the existing instruction path when another code observer
+     * matches this address. Only the sole owner's internal hook is elided. */
+    struct hook *hook;
+    unsigned matching = 0;
+    HOOK_FOREACH_VAR_DECLARE;
+    HOOK_FOREACH(uc, hook, UC_HOOK_CODE) {
+        if (HOOK_BOUND_CHECK(hook, s->pc_curr)) {
+            matching++;
+        }
+    }
+    if (matching != 1) {
+        return false;
+    }
+
+    TCGContext *tcg_ctx = uc->tcg_ctx;
+    tcg_gen_movi_i32(tcg_ctx, tcg_ctx->cpu_R[rd], uc->embedder_a32_cbar);
+    uc->embedder_insn_decision &= 4;
+    return true;
+}
+
 static void disas_arm_insn(DisasContext *s, unsigned int insn)
 {
     unsigned int cond = insn >> 28;
@@ -11059,6 +11090,10 @@ static void disas_arm_insn(DisasContext *s, unsigned int insn)
     if (arm_dc_feature(s, ARM_FEATURE_M)) {
         gen_exception_insn(s, s->pc_curr, EXCP_INVSTATE, syn_uncategorized(),
                            default_exception_el(s));
+        return;
+    }
+
+    if (gen_embedder_a32_cbar(s, insn)) {
         return;
     }
 

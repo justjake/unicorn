@@ -608,6 +608,8 @@ struct uc_struct {
     // handles retries and exits that restore PC) but calls it only when a
     // request or retry is pending, and omits the per-access helpers.
     bool embedder_entry_exits;
+    bool embedder_a32_cbar_wired;
+    uint32_t embedder_a32_cbar;
     bool embedder_instruction_counter;
     bool embedder_guard_diagnostics;
     // Why a translated block was made slow: classifier refusal or another

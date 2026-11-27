@@ -3690,6 +3690,26 @@ uc_err uc_embedder_set_entry_exits(uc_engine *uc, bool enabled)
     return UC_ERR_OK;
 }
 
+/* Install the exact board owner's immutable CBAR read value. */
+UNICORN_EXPORT
+uc_err uc_embedder_set_a32_cbar(uc_engine *uc, uint32_t cbar)
+{
+    UC_INIT(uc);
+    if (uc->arch != UC_ARCH_ARM || uc->cpu_model != UC_CPU_ARM_CORTEX_A7 ||
+        uc->nested_level || (cbar & 0x7fff)) {
+        restore_jit_state(uc);
+        return UC_ERR_ARG;
+    }
+    if (!uc->embedder_a32_cbar_wired || uc->embedder_a32_cbar != cbar) {
+        uc->embedder_a32_cbar_wired = true;
+        uc->embedder_a32_cbar = cbar;
+        uc->cpu->cflags_next_tb = -1;
+        uc->tb_flush(uc);
+    }
+    restore_jit_state(uc);
+    return UC_ERR_OK;
+}
+
 // Enable exact translated-block instruction counts. Recompile cached blocks
 // because the counter update is emitted into their TCG prologues.
 UNICORN_EXPORT
