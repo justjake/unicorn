@@ -1129,6 +1129,17 @@ static void clear_deleted_hooks(uc_engine *uc)
     list_clear(&uc->hooks_to_del);
 }
 
+static bool has_external_execution_hook(uc_engine *uc, uc_hook_idx index)
+{
+    for (struct list_item *item = uc->hook[index].head; item; item = item->next) {
+        struct hook *hook = item->data;
+        if ((uc_hook)hook != uc->count_hook && !hook->to_delete) {
+            return true;
+        }
+    }
+    return false;
+}
+
 UNICORN_EXPORT
 uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
                     uint64_t timeout, size_t count)
@@ -1265,10 +1276,16 @@ uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
     }
 
     uc->emu_count = count;
-    // A translation-filter owner manages its own instruction entries. Keep
-    // the legacy counter there; ordinary A64 runs use fixed-width TB counts.
-    bool block_count = uc->arch == UC_ARCH_ARM64 &&
-                       !uc->embedder_insn_filter && !uc->embedder_acct.enabled;
+    // A translation-filter owner manages its own instruction entries. Cortex-M
+    // observers can stop inside Thumb IT blocks, so keep their entry counter.
+    bool block_count = false;
+    if (count && !uc->embedder_insn_filter && !uc->embedder_acct.enabled) {
+        block_count = uc->arch == UC_ARCH_ARM64 ||
+                      (uc->arch == UC_ARCH_ARM &&
+                       (uc->mode & UC_MODE_MCLASS) &&
+                       !has_external_execution_hook(uc, UC_HOOK_CODE_IDX) &&
+                       !has_external_execution_hook(uc, UC_HOOK_BLOCK_IDX));
+    }
     uc->count_block_instructions = 0;
     // Remove the old counter when changing accounting mode as well.
     if (uc->count_hook != 0 &&
@@ -2282,7 +2299,7 @@ static void uc_tracecode_hooks(int32_t size, uc_hook_idx index, void *handle,
     //     uc->set_pc(uc, address);
     // }
 
-    // A64's internal counter receives the translated instruction count in
+    // The internal block counter receives the translated instruction count in
     // bits 16..29. Ordinary block observers continue to receive byte sizes.
     uint32_t count_size = size;
     if (index == UC_HOOK_BLOCK_IDX && uc->count_hook && uc->count_hook_is_block) {

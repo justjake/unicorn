@@ -2423,7 +2423,7 @@ static int embedder_insn_index(TranslationBlock *tb, uintptr_t retaddr)
     return -1;
 }
 
-// Return the not-yet-entered tail when a helper recompiles an A64 block.
+// Return the not-yet-entered tail when a helper recompiles a counted block.
 // The counter's next block entry will debit the restarted instruction.
 static void count_restart_tail(CPUState *cpu, TranslationBlock *tb,
                                uintptr_t retaddr)

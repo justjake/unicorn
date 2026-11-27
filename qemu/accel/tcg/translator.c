@@ -762,8 +762,8 @@ _end_loop:
         }
 
         tcg_op->args[1] = db->tb->size;
-        // The A64 uc_emu_start counter needs actual instruction entries,
-        // including a lower EL's variable-width A32/Thumb blocks. The helper
+        // The uc_emu_start block counter needs actual instruction entries,
+        // including variable-width Thumb blocks. The helper
         // strips this metadata before calling ordinary block observers.
         if (uc->count_hook && uc->count_hook_is_block) {
             assert(db->tb->size <= 0xffff && db->tb->icount <= 0x3fff);
