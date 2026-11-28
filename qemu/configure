@@ -67,7 +67,7 @@ funcs: ${FUNCNAME[*]}
 lines: ${BASH_LINENO[*]}"
     '; fi
     echo $compiler "$@" >> config.log
-    $compiler "$@" >> config.log 2>&1 || return $?
+    "$compiler" "$@" >> config.log 2>&1 || return $?
     # Test passed. If this is an --enable-werror build, rerun
     # the test with -Werror and bail out if it fails. This
     # makes warning-generating-errors in configure test code
@@ -82,7 +82,7 @@ lines: ${BASH_LINENO[*]}"
         ;;
     esac
     echo $compiler -Werror "$@" >> config.log
-    $compiler -Werror "$@" >> config.log 2>&1 && return $?
+    "$compiler" -Werror "$@" >> config.log 2>&1 && return $?
     error_exit "configure test passed without -Werror but failed with -Werror." \
         "This is probably a bug in the configure script. The failing command" \
         "will be at the bottom of config.log." \
@@ -197,11 +197,6 @@ ld_has() {
 
 # make source path absolute
 source_path=$(cd "$(dirname -- "$0")"; pwd)
-
-if printf %s\\n "$source_path" "$PWD" | grep -q "[[:space:]:]";
-then
-  error_exit "main directory cannot contain spaces nor colons"
-fi
 
 # default parameters
 cpu=""
@@ -671,7 +666,7 @@ for opt do
   case "$opt" in
   --help|-h) show_help=yes
   ;;
-  --version|-V) exec cat $source_path/VERSION
+  --version|-V) exec cat "$source_path/VERSION"
   ;;
   --prefix=*) prefix="$optarg"
   ;;
@@ -2367,7 +2362,7 @@ if test "$bigendian" = "yes" ; then
 fi
 if test "$mingw32" = "yes" ; then
   echo "CONFIG_WIN32=y" >> $config_host_mak
-  rc_version=$(cat $source_path/VERSION)
+  rc_version=$(cat "$source_path/VERSION")
   version_major=${rc_version%%.*}
   rc_version=${rc_version#*.}
   version_minor=${rc_version%%.*}
@@ -2397,7 +2392,7 @@ fi
 if test "$static" = "yes" ; then
   echo "CONFIG_STATIC=y" >> $config_host_mak
 fi
-qemu_version=$(head $source_path/VERSION)
+qemu_version=$(head "$source_path/VERSION")
 echo "VERSION=$qemu_version" >>$config_host_mak
 echo "PKGVERSION=$pkgversion" >>$config_host_mak
 echo "SRC_PATH=$source_path" >> $config_host_mak
