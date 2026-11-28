@@ -21,6 +21,7 @@
 #define uc_del_inline_hook uc_del_inline_hook_mipsel
 #define tb_invalidate_phys_range tb_invalidate_phys_range_mipsel
 #define tb_invalidate_phys_page_fast tb_invalidate_phys_page_fast_mipsel
+#define tb_page_holds_code tb_page_holds_code_mipsel
 #define use_idiv_instructions use_idiv_instructions_mipsel
 #define arm_arch arm_arch_mipsel
 #define tb_target_set_jmp_target tb_target_set_jmp_target_mipsel

@@ -622,6 +622,15 @@ void tlb_protect_code(struct uc_struct *uc, ram_addr_t ram_addr)
 {
     cpu_physical_memory_test_and_clear_dirty(ram_addr, TARGET_PAGE_SIZE,
                                              DIRTY_MEMORY_CODE);
+    /* embedder: Unicorn keeps no dirty bitmap. A page's first translation
+       puts this processor's write entries for it, under every alias, back on
+       the slow path, so a store that rewrites the new code is seen. */
+    if (uc->cpu) {
+        ram_addr_t page = ram_addr & TARGET_PAGE_MASK;
+        tlb_reset_dirty(uc->cpu,
+                        (uintptr_t)qemu_map_ram_ptr(uc, NULL, page),
+                        TARGET_PAGE_SIZE);
+    }
 }
 
 /* update the TLB so that writes in physical page 'phys_addr' are no longer
@@ -1089,9 +1098,12 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
                    every page it sees translated, in every engine and alias, so
                    only watched pages can hold translated code; others keep the
                    store fast path. An engine without declared watches keeps
-                   QEMU's code-write detection on every page holding code. */
+                   QEMU's code-write detection on every page holding code: a
+                   page's first translation re-arms its entries
+                   (tlb_protect_code). */
                 if (!cpu->uc->embedder_page_hooks || cpu->uc->snapshot_level != 0 ||
-                    (!cpu->uc->embedder_watch && !cpu->uc->embedder_high_watches) ||
+                    (!cpu->uc->embedder_watch && !cpu->uc->embedder_high_watches &&
+                     tb_page_holds_code(cpu->uc, iotlb)) ||
                     embedder_watched(cpu->uc, paddr_page, paddr_page + TARGET_PAGE_SIZE - 1)) {
                     write_address |= TLB_NOTDIRTY;
                 }

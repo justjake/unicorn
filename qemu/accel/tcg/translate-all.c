@@ -2311,6 +2311,14 @@ static bool embedder_store_precedes_code(struct uc_struct *uc, uintptr_t retaddr
     return start < first + tb->size && start + len > first;
 }
 
+/* embedder: whether any translation was made from the page holding addr. */
+bool tb_page_holds_code(struct uc_struct *uc, tb_page_addr_t addr)
+{
+    PageDesc *p = page_find(uc, addr >> TARGET_PAGE_BITS);
+
+    return p && p->first_tb != (uintptr_t)NULL;
+}
+
 void tb_invalidate_phys_page_fast(struct uc_struct *uc, struct page_collection *pages,
                                   tb_page_addr_t start, int len,
                                   uintptr_t retaddr)

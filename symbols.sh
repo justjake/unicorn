@@ -21,6 +21,7 @@ uc_add_inline_hook \
 uc_del_inline_hook \
 tb_invalidate_phys_range \
 tb_invalidate_phys_page_fast \
+tb_page_holds_code \
 use_idiv_instructions \
 arm_arch \
 tb_target_set_jmp_target \

@@ -21,6 +21,7 @@
 #define uc_del_inline_hook uc_del_inline_hook_mips
 #define tb_invalidate_phys_range tb_invalidate_phys_range_mips
 #define tb_invalidate_phys_page_fast tb_invalidate_phys_page_fast_mips
+#define tb_page_holds_code tb_page_holds_code_mips
 #define use_idiv_instructions use_idiv_instructions_mips
 #define arm_arch arm_arch_mips
 #define tb_target_set_jmp_target tb_target_set_jmp_target_mips
