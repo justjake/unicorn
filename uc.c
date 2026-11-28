@@ -2334,10 +2334,16 @@ static void uc_tracecode_hooks(int32_t size, uc_hook_idx index, void *handle,
         }
     }
 
-    // embedder: asynchronous pauses apply at every translated block boundary,
-    // including slow blocks and modes that do not use instruction accounting.
-    if (index == UC_HOOK_BLOCK_IDX && uc->embedder_acct.pause_requested &&
-        __atomic_load_n(uc->embedder_acct.pause_requested, __ATOMIC_ACQUIRE)) {
+    // embedder: asynchronous pauses apply at every translated block boundary.
+    // A Thumb recovery grant marked terminal can also stop here when spent.
+    // No instruction from this block has entered. The owner settles the last
+    // charged block when the run returns and grants time for the next block.
+    if (index == UC_HOOK_BLOCK_IDX &&
+        ((uc->embedder_acct.pause_requested &&
+          __atomic_load_n(uc->embedder_acct.pause_requested, __ATOMIC_ACQUIRE)) ||
+         (uc->embedder_acct.enabled == 4 &&
+          (uc->embedder_thumb_exception_status & UC_EMBEDDER_THUMB_GRANT_ENDS_RUN) &&
+          uc->embedder_acct.budget == 0))) {
         uc->stop_request = true;
         if (uc->cpu) {
             cpu_exit(uc->cpu);

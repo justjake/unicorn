@@ -2216,7 +2216,8 @@ uint32_t HELPER(v7m_mrs)(CPUARMState *env, uint32_t reg)
     /* First handle registers which unprivileged can read */
     if (reg <= 7) {
         struct uc_struct *uc = env_cpu(env)->uc;
-        uint32_t status = uc->embedder_thumb_exception_status;
+        uint32_t status = uc->embedder_thumb_exception_status &
+                          ~UC_EMBEDDER_THUMB_GRANT_ENDS_RUN;
         if ((reg & 1) && uc->embedder_acct.enabled == 4 && status) {
             return v7m_mrs_xpsr(env, reg & ~1u, el) | (status - 1);
         }

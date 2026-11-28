@@ -5,6 +5,8 @@
 #ifndef UC_PRIV_H
 #define UC_PRIV_H
 
+#define UC_EMBEDDER_THUMB_GRANT_ENDS_RUN (UINT32_C(1) << 31)
+
 #include "unicorn/platform.h"
 #include <stdio.h>
 
@@ -663,6 +665,7 @@ struct uc_struct {
     } embedder_acct;
     // Controller-owned IPSR for an admitted Thumb window, biased by one.
     // Zero leaves the instruction helper on the engine's own exception state.
+    // The top bit indicates that exhausting the grant ends the run.
     uint32_t embedder_thumb_exception_status;
     // Observational host counters, never serialized in a CPU context. Entries
     // 0..6 are actual jumps by call site; 7..9 are request origins; 10..11
