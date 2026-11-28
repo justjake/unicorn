@@ -7,6 +7,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "uc_priv.h"
 #include "qemu/units.h"
 #include "cpu.h"
 #include "internals.h"
@@ -20,6 +21,25 @@
 #include "qemu/guest-random.h"
 #include "arm_ldst.h"
 #include "exec/cpu_ldst.h"
+
+/* A guarded load can be restarted only before its first transfer. A
+ * direct TLB read excludes MMIO, watchpoints and mappings with read hooks
+ * when page hooks are active. The exact path handles all other spans. */
+void HELPER(embedder_guard_ram_load)(CPUARMState *env, uint32_t addr,
+                                     uint32_t bytes, uint32_t mmu_idx)
+{
+    struct uc_struct *uc = env_cpu(env)->uc;
+    uint32_t last = addr + (bytes - 1);
+    uint32_t alignment_mask = bytes < 4 ? bytes - 1 : 3;
+
+    if (likely(uc->embedder_page_hooks && !(addr & alignment_mask) && last >= addr &&
+               tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx) &&
+               (((addr ^ last) & TARGET_PAGE_MASK) == 0 ||
+                tlb_vaddr_to_host(env, last, MMU_DATA_LOAD, mmu_idx)))) {
+        return;
+    }
+    embedder_isolate_insn(env_cpu(env), GETPC());
+}
 
 static void v7m_msr_xpsr(CPUARMState *env, uint32_t mask,
                          uint32_t reg, uint32_t val)
@@ -2195,7 +2215,13 @@ uint32_t HELPER(v7m_mrs)(CPUARMState *env, uint32_t reg)
     unsigned el = arm_current_el(env);
 
     /* First handle registers which unprivileged can read */
-    if (reg >=0 && reg <= 7) {
+    if (reg <= 7) {
+        struct uc_struct *uc = env_cpu(env)->uc;
+        uint32_t status = uc->embedder_thumb_exception_status &
+                          ~UC_EMBEDDER_THUMB_GRANT_ENDS_RUN;
+        if ((reg & 1) && uc->embedder_acct.enabled == 4 && status) {
+            return v7m_mrs_xpsr(env, reg & ~1u, el) | (status - 1);
+        }
         return v7m_mrs_xpsr(env, reg, el);
     } else {
         switch (reg) {

@@ -3754,6 +3754,13 @@ static void tcg_reg_alloc_call(TCGContext *s, TCGOp *op)
 #if defined(CONFIG_TCG_INTERPRETER)
     TCGHelperInfo *info = g_hash_table_lookup(s->helper_table, func_addr);
     tcg_out_call(s, (tcg_insn_unit *)info->tci_wrapper, nb_iargs, info->sizemask);
+#elif defined(__aarch64__) && defined(TARGET_ARM) && !defined(TARGET_AARCH64)
+    if ((s->uc->mode & UC_MODE_MCLASS) &&
+        func_addr == (tcg_insn_unit *)HELPER(check_exit_request)) {
+        tcg_out_mprofile_exit_check(s, func_addr);
+    } else {
+        tcg_out_call(s, func_addr);
+    }
 #else
     tcg_out_call(s, func_addr);
 #endif

@@ -1129,6 +1129,17 @@ static void clear_deleted_hooks(uc_engine *uc)
     list_clear(&uc->hooks_to_del);
 }
 
+static bool has_external_execution_hook(uc_engine *uc, uc_hook_idx index)
+{
+    for (struct list_item *item = uc->hook[index].head; item; item = item->next) {
+        struct hook *hook = item->data;
+        if ((uc_hook)hook != uc->count_hook && !hook->to_delete) {
+            return true;
+        }
+    }
+    return false;
+}
+
 UNICORN_EXPORT
 uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
                     uint64_t timeout, size_t count)
@@ -1259,16 +1270,24 @@ uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
     // the guest. The level advanced above is given back, as this run never
     // entered it.
     if (__atomic_exchange_n(&uc->pending_stop, 0, __ATOMIC_SEQ_CST)) {
-        uc->nested_level--;
-        uc->emulation_done = true;
+        if (--uc->nested_level == 0) {
+            uc->emulation_done = true;
+            restore_jit_state(uc);
+        }
         return UC_ERR_OK;
     }
 
     uc->emu_count = count;
-    // A translation-filter owner manages its own instruction entries. Keep
-    // the legacy counter there; ordinary A64 runs use fixed-width TB counts.
-    bool block_count = uc->arch == UC_ARCH_ARM64 &&
-                       !uc->embedder_insn_filter && !uc->embedder_acct.enabled;
+    // A translation-filter owner manages its own instruction entries. Cortex-M
+    // observers can stop inside Thumb IT blocks, so keep their entry counter.
+    bool block_count = false;
+    if (count && !uc->embedder_insn_filter && !uc->embedder_acct.enabled) {
+        block_count = uc->arch == UC_ARCH_ARM64 ||
+                      (uc->arch == UC_ARCH_ARM &&
+                       (uc->mode & UC_MODE_MCLASS) &&
+                       !has_external_execution_hook(uc, UC_HOOK_CODE_IDX) &&
+                       !has_external_execution_hook(uc, UC_HOOK_BLOCK_IDX));
+    }
     uc->count_block_instructions = 0;
     // Remove the old counter when changing accounting mode as well.
     if (uc->count_hook != 0 &&
@@ -1358,12 +1377,15 @@ uc_err uc_emu_stop(uc_engine *uc)
 UNICORN_EXPORT
 uc_err uc_emu_request_pause(uc_engine *uc)
 {
-    UC_INIT(uc);
+    if (!uc) {
+        return UC_ERR_HANDLE;
+    }
+    // The requester is not the JIT owner. Only the execution thread may
+    // change the engine's JIT nesting and its thread-local protection state.
     __atomic_store_n(&uc->pending_stop, 1, __ATOMIC_SEQ_CST);
     if (uc->cpu) {
         cpu_exit(uc->cpu);
     }
-    restore_jit_state(uc);
     return UC_ERR_OK;
 }
 
@@ -1555,7 +1577,13 @@ uc_err uc_embedder_replace_backing(uc_engine *uc, uint64_t address, uint64_t siz
     uc->embedder_preserve_tlb = true;
     uc->readonly_mem(mr, (perms & UC_PROT_WRITE) == 0);
     uc->embedder_preserve_tlb = false;
-    uc->tcg_flush_physical_tlb(uc, address, size);
+    if (uc->arch == UC_ARCH_ARM && (uc->mode & UC_MODE_MCLASS) &&
+        uc->embedder_code_store) {
+        // Retargeting can create an alias with an unchanged guest mapping.
+        uc->tcg_flush_tlb(uc);
+    } else {
+        uc->tcg_flush_physical_tlb(uc, address, size);
+    }
     uc->tb_flush(uc);
     restore_jit_state(uc);
     return UC_ERR_OK;
@@ -2282,7 +2310,7 @@ static void uc_tracecode_hooks(int32_t size, uc_hook_idx index, void *handle,
     //     uc->set_pc(uc, address);
     // }
 
-    // A64's internal counter receives the translated instruction count in
+    // The internal block counter receives the translated instruction count in
     // bits 16..29. Ordinary block observers continue to receive byte sizes.
     uint32_t count_size = size;
     if (index == UC_HOOK_BLOCK_IDX && uc->count_hook && uc->count_hook_is_block) {
@@ -2306,10 +2334,16 @@ static void uc_tracecode_hooks(int32_t size, uc_hook_idx index, void *handle,
         }
     }
 
-    // embedder: asynchronous pauses apply at every translated block boundary,
-    // including slow blocks and modes that do not use instruction accounting.
-    if (index == UC_HOOK_BLOCK_IDX && uc->embedder_acct.pause_requested &&
-        __atomic_load_n(uc->embedder_acct.pause_requested, __ATOMIC_ACQUIRE)) {
+    // embedder: asynchronous pauses apply at every translated block boundary.
+    // A Thumb recovery grant marked terminal can also stop here when spent.
+    // No instruction from this block has entered. The owner settles the last
+    // charged block when the run returns and grants time for the next block.
+    if (index == UC_HOOK_BLOCK_IDX &&
+        ((uc->embedder_acct.pause_requested &&
+          __atomic_load_n(uc->embedder_acct.pause_requested, __ATOMIC_ACQUIRE)) ||
+         (uc->embedder_acct.enabled == 4 &&
+          (uc->embedder_thumb_exception_status & UC_EMBEDDER_THUMB_GRANT_ENDS_RUN) &&
+          uc->embedder_acct.budget == 0))) {
         uc->stop_request = true;
         if (uc->cpu) {
             cpu_exit(uc->cpu);
@@ -3505,8 +3539,12 @@ uc_err uc_embedder_set_code_store(uc_engine *uc,
                                   void *user)
 {
     UC_INIT(uc);
+    bool switched = (uc->embedder_code_store != NULL) != (callback != NULL);
     uc->embedder_code_store = callback;
     uc->embedder_restart_on_code_store = callback != NULL;
+    if (switched && uc->arch == UC_ARCH_ARM && (uc->mode & UC_MODE_MCLASS)) {
+        uc->tcg_flush_tlb(uc);
+    }
     if (callback) {
         uc->embedder_code_store_user = user;
     }
@@ -3621,15 +3659,18 @@ done:
 //          instruction-opportunity histograms.
 // 1 << 29: opt-in translation repeat details split generations and observed
 //          invalidation causes.
-// 1 << 30: Thumb accounting appends a 256-bit proven-page bitmap covering
-//          0x0000_0000..0x0010_0000 (256 x 4 KiB pages); addresses >= 0x100000
+// 1 << 30: Thumb accounting appends a 1024-bit proven-page bitmap covering
+//          0x0000_0000..0x0010_0000 (1024 x 1 KiB pages); addresses >= 0x100000
 //          continue to check thumb_page.
+// 1 << 31: mode 4 supports the translation filter's Thread Mode-only bit (32)
+//          and appends thumb_handler_mode.
 UNICORN_EXPORT
 uint32_t uc_embedder_features(void)
 {
     return 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 |
            4096 | 1u << 20 | 1u << 21 | 1u << 22 | 1u << 23 | 1u << 24 |
-           1u << 25 | 1u << 26 | 1u << 27 | 1u << 28 | 1u << 29 | 1u << 30;
+           1u << 25 | 1u << 26 | 1u << 27 | 1u << 28 | 1u << 29 | 1u << 30 |
+           1u << 31;
 }
 
 UNICORN_EXPORT
@@ -3818,6 +3859,12 @@ UNICORN_EXPORT
 void *uc_embedder_accounting(uc_engine *uc)
 {
     return &uc->embedder_acct;
+}
+
+UNICORN_EXPORT
+uint32_t *uc_embedder_thumb_exception_status(uc_engine *uc)
+{
+    return &uc->embedder_thumb_exception_status;
 }
 
 // embedder: block chains. One admitted run can cover several translated

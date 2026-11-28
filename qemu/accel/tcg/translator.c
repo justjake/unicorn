@@ -42,6 +42,7 @@ void translator_loop_temp_check(DisasContextBase *db)
  */
 struct EmbedderBlockGuard {
     TCGOp *fast;
+    TCGOp *thread_only;
     TCGOp *slow_reason;
     TCGOp *classifier_sample_pc;
     TCGOp *classifier_sample_word;
@@ -281,6 +282,24 @@ static void gen_embedder_block_guard(TCGContext *tcg_ctx,
         guard->thumb_mode = uc->embedder_acct.enabled == 4 ? 4 : 3;
         tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, enabled,
                             guard->thumb_mode, disarmed);
+        if (guard->thumb_mode == 4) {
+            // Only blocks with an exception-return-capable instruction need
+            // this check. Fold the branch away for other blocks.
+            TCGLabel *mode_checked = gen_new_label(tcg_ctx);
+            TCGv_i32 thread_only = tcg_const_i32(tcg_ctx, 0);
+            guard->thread_only = tcg_last_op(tcg_ctx);
+            tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_EQ, thread_only, 0,
+                                mode_checked);
+            TCGv_i64 handler = tcg_temp_new_i64(tcg_ctx);
+            ucp = tcg_const_ptr(tcg_ctx, uc);
+            tcg_gen_ld_i64(tcg_ctx, handler, ucp,
+                           offsetof(struct uc_struct, embedder_acct.thumb_handler_mode));
+            tcg_temp_free_ptr(tcg_ctx, ucp);
+            tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_NE, handler, 0, helper);
+            tcg_temp_free_i64(tcg_ctx, handler);
+            gen_set_label(tcg_ctx, mode_checked);
+            tcg_temp_free_i32(tcg_ctx, thread_only);
+        }
         uint64_t page_idx = (uint64_t)pc >> 10;
         if (page_idx < 1024) {
             unsigned word_idx = (unsigned)(page_idx >> 6);
@@ -596,6 +615,7 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
 
     // tcg_dump_ops(tcg_ctx, false, "translator loop");
 
+    uc->embedder_tb_thread_only = false;
     uc->embedder_tb_slow = false;
     uc->embedder_tb_slow_reason = 0;
     uc->embedder_tb_slow_pc = 0;
@@ -742,8 +762,8 @@ _end_loop:
         }
 
         tcg_op->args[1] = db->tb->size;
-        // The A64 uc_emu_start counter needs actual instruction entries,
-        // including a lower EL's variable-width A32/Thumb blocks. The helper
+        // The uc_emu_start block counter needs actual instruction entries,
+        // including variable-width Thumb blocks. The helper
         // strips this metadata before calling ordinary block observers.
         if (uc->count_hook && uc->count_hook_is_block) {
             assert(db->tb->size <= 0xffff && db->tb->icount <= 0x3fff);
@@ -775,7 +795,14 @@ _end_loop:
                           (uint64_t)db->pc_first > UINT32_MAX)) &&
                         (!uc->embedder_tb_thumb ||
                          (thumb_mode && thumb_page));
+            if (uc->embedder_tb_thread_only && !embedder_guard.thread_only) {
+                fast = false;
+            }
             tcg_set_insn_param(embedder_guard.fast, 1, fast ? 1 : 0);
+            if (embedder_guard.thread_only) {
+                tcg_set_insn_param(embedder_guard.thread_only, 1,
+                                   uc->embedder_tb_thread_only);
+            }
             if (uc->embedder_guard_diagnostics && !fast) {
                 uint32_t reason = UC_EMBEDDER_TB_SLOW_OTHER;
                 if (uc->embedder_tb_slow_reason ==

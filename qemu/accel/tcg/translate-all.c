@@ -542,6 +542,14 @@ static inline PageDesc *page_find(struct uc_struct *uc, tb_page_addr_t index)
     return page_find_alloc(uc, index, 0);
 }
 
+#if defined(TARGET_ARM) && !defined(TARGET_AARCH64)
+bool tb_ram_page_has_code(struct uc_struct *uc, ram_addr_t address)
+{
+    PageDesc *page = page_find(uc, address >> TARGET_PAGE_BITS);
+    return page && page->first_tb;
+}
+#endif
+
 static void page_lock_pair(struct uc_struct *uc, PageDesc **ret_p1, tb_page_addr_t phys1,
                            PageDesc **ret_p2, tb_page_addr_t phys2, int alloc);
 
@@ -2312,7 +2320,7 @@ static bool embedder_store_precedes_code(struct uc_struct *uc, uintptr_t retaddr
 }
 
 void tb_invalidate_phys_page_fast(struct uc_struct *uc, struct page_collection *pages,
-                                  tb_page_addr_t start, int len,
+                                  tb_page_addr_t start, hwaddr paddr, int len,
                                   uintptr_t retaddr)
 {
     PageDesc *p;
@@ -2326,18 +2334,20 @@ void tb_invalidate_phys_page_fast(struct uc_struct *uc, struct page_collection *
 
     assert_page_locked(p);
     if (!p->code_bitmap &&
-        ++p->code_write_count >= SMC_BITMAP_USE_THRESHOLD) {
+        (uc->embedder_code_store || ++p->code_write_count >= SMC_BITMAP_USE_THRESHOLD)) {
         build_page_bitmap(uc, p);
     }
-    bool covers_code = true;
+    bool covers_code = !p->code_bitmap;
 
     if (p->code_bitmap) {
-        unsigned int nr;
-        unsigned long b;
-
-        nr = start & ~TARGET_PAGE_MASK;
-        b = p->code_bitmap[BIT_WORD(nr)] >> (nr & (BITS_PER_LONG - 1));
-        covers_code = (b & ((1 << len) - 1)) != 0;
+        unsigned int first = start & ~TARGET_PAGE_MASK;
+        unsigned int last = MIN(first + len, TARGET_PAGE_SIZE);
+        for (unsigned int bit = first; bit < last; bit++) {
+            if (test_bit(bit, p->code_bitmap)) {
+                covers_code = true;
+                break;
+            }
+        }
     }
     if (covers_code) {
         /* embedder: a store covering translated bytes is the only store that
@@ -2345,7 +2355,7 @@ void tb_invalidate_phys_page_fast(struct uc_struct *uc, struct page_collection *
            retires the translation, so its code watch reacts to that store
            alone; a data store sharing the page never reaches this point. */
         if (uc->embedder_code_store) {
-            uc->embedder_code_store(uc->embedder_code_store_user, start, len);
+            uc->embedder_code_store(uc->embedder_code_store_user, paddr, len);
         }
         /* embedder: if the bytes this store changed are still ahead of it in
            the running block, those instructions were translated from code
@@ -2423,7 +2433,7 @@ static int embedder_insn_index(TranslationBlock *tb, uintptr_t retaddr)
     return -1;
 }
 
-// Return the not-yet-entered tail when a helper recompiles an A64 block.
+// Return the not-yet-entered tail when a helper recompiles a counted block.
 // The counter's next block entry will debit the restarted instruction.
 static void count_restart_tail(CPUState *cpu, TranslationBlock *tb,
                                uintptr_t retaddr)
@@ -2443,8 +2453,9 @@ static void count_restart_tail(CPUState *cpu, TranslationBlock *tb,
    instruction executing at retaddr as a block of its own. remember: also end
    later translations at it and retranslate the block it was found in. The
    embedder's embedder_restart callback learns its PC first. */
-void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember,
-                           bool remember_watched_store)
+static void embedder_restart_memory_insn(CPUState *cpu, uintptr_t retaddr,
+                                         bool remember, bool remember_watched_store,
+                                         bool isolate)
 {
     struct uc_struct *uc = cpu->uc;
     TCGContext *tcg_ctx = uc->tcg_ctx;
@@ -2472,7 +2483,7 @@ void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember,
     if (index < 0) {
         return;
     }
-    if (index == tb->icount - 1) {
+    if (index == tb->icount - 1 && (!isolate || tb->icount == 1)) {
         if (remember_watched_store) {
             uc->embedder_exit_counters[UC_COUNT_WATCHED_STORE_TERMINAL_REQUESTS]++;
         }
@@ -2520,6 +2531,18 @@ void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember,
         tb_exec_unlock(uc);
     }
     cpu_loop_exit_noexc(cpu);
+}
+
+void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember,
+                           bool remember_watched_store)
+{
+    embedder_restart_memory_insn(cpu, retaddr, remember, remember_watched_store,
+                                false);
+}
+
+void embedder_isolate_insn(CPUState *cpu, uintptr_t retaddr)
+{
+    embedder_restart_memory_insn(cpu, retaddr, false, false, true);
 }
 
 /* embedder: translate again from the current instruction (its hook has not

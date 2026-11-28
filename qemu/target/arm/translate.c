@@ -9326,6 +9326,26 @@ static bool op_store_ri(DisasContext *s, arg_ldst_ri *a,
     return true;
 }
 
+static void guard_thumb_ram_load(DisasContext *s, TCGv_i32 addr,
+                                 int bytes, int mem_idx)
+{
+    if (!s->thumb || !s->embedder_guard_ram_load) {
+        return;
+    }
+    if (s->base.max_insns == 1) {
+        /* The isolated retry executes under the existing observation path,
+         * with no guard before its transfers. */
+        UC_EMBEDDER_MARK_TB_SLOW(s->uc, UC_EMBEDDER_TB_SLOW_OTHER);
+        return;
+    }
+    TCGContext *tcg_ctx = s->uc->tcg_ctx;
+    TCGv_i32 length = tcg_const_i32(tcg_ctx, bytes);
+    TCGv_i32 mmu = tcg_const_i32(tcg_ctx, mem_idx);
+    gen_helper_embedder_guard_ram_load(tcg_ctx, tcg_ctx->cpu_env, addr, length, mmu);
+    tcg_temp_free_i32(tcg_ctx, mmu);
+    tcg_temp_free_i32(tcg_ctx, length);
+}
+
 static bool op_ldrd_ri(DisasContext *s, arg_ldst_ri *a, int rt2)
 {
     TCGContext *tcg_ctx = s->uc->tcg_ctx;
@@ -9333,6 +9353,7 @@ static bool op_ldrd_ri(DisasContext *s, arg_ldst_ri *a, int rt2)
     TCGv_i32 addr, tmp;
 
     addr = op_addr_ri_pre(s, a);
+    guard_thumb_ram_load(s, addr, 8, mem_idx);
 
     tmp = tcg_temp_new_i32(tcg_ctx);
     gen_aa32_ld_i32(s, tmp, addr, mem_idx, MO_UL | s->be_data);
@@ -10606,6 +10627,7 @@ static bool do_ldm(DisasContext *s, arg_ldst_block *a, int min_n)
 
     addr = op_addr_block_pre(s, a, n);
     mem_idx = get_mem_index(s);
+    guard_thumb_ram_load(s, addr, n * 4, mem_idx);
     loaded_base = false;
     loaded_var = NULL;
 
@@ -10784,6 +10806,7 @@ static bool op_tbranch(DisasContext *s, arg_tbranch *a, bool half)
 {
     TCGContext *tcg_ctx = s->uc->tcg_ctx;
     TCGv_i32 addr, tmp;
+    int mem_idx = get_mem_index(s);
 
     tmp = load_reg(s, a->rm);
     if (half) {
@@ -10792,7 +10815,8 @@ static bool op_tbranch(DisasContext *s, arg_tbranch *a, bool half)
     addr = load_reg(s, a->rn);
     tcg_gen_add_i32(tcg_ctx, addr, addr, tmp);
 
-    gen_aa32_ld_i32(s, tmp, addr, get_mem_index(s),
+    guard_thumb_ram_load(s, addr, half ? 2 : 1, mem_idx);
+    gen_aa32_ld_i32(s, tmp, addr, mem_idx,
                     half ? MO_UW | s->be_data : MO_UB);
     tcg_temp_free_i32(tcg_ctx, addr);
 
@@ -11629,49 +11653,6 @@ static void arm_post_translate_insn(DisasContext *dc)
     translator_loop_temp_check(&dc->base);
 }
 
-static bool arm_match_embedder_uidiv_core(DisasContext *dc, CPUARMState *env,
-                                          uint32_t first_insn)
-{
-    static const uint32_t pattern[33] = {
-        0xe311020eu, 0x01a01181u, 0x03a03008u, 0x13a03001u,
-        0xe3510201u, 0x31510000u, 0x31a01201u, 0x31a03203u,
-        0x3afffffau, 0xe3510102u, 0x31510000u, 0x31a01081u,
-        0x31a03083u, 0x3afffffau, 0xe3a02000u, 0xe1500001u,
-        0x20400001u, 0x21822003u, 0xe15000a1u, 0x204000a1u,
-        0x218220a3u, 0xe1500121u, 0x20400121u, 0x21822123u,
-        0xe15001a1u, 0x204001a1u, 0x218221a3u, 0xe3500000u,
-        0x11b03223u, 0x11a01221u, 0x1affffefu, 0xe1a00002u,
-        0xe12fff1eu,
-    };
-    struct uc_struct *uc = dc->uc;
-    if (first_insn != pattern[0] || dc->base.num_insns != 1 ||
-        dc->base.max_insns < 9 || dc->thumb || dc->sctlr_b ||
-        is_singlestepping(dc) || uc->embedder_chains) {
-        return false;
-    }
-    if ((dc->pc_curr & (TARGET_PAGE_SIZE - 1)) + sizeof(pattern) > TARGET_PAGE_SIZE) {
-        return false;
-    }
-    for (unsigned i = 0; i < 33; i++) {
-        uint32_t addr = (uint32_t)(dc->pc_curr + i * 4u);
-        if (uc_addr_is_exit(uc, addr)) {
-            return false;
-        }
-        uint32_t word = (i == 0) ? first_insn : arm_ldl_code(env, addr, false);
-        if (uc->invalid_error || word != pattern[i]) {
-            return false;
-        }
-        if (uc->embedder_insn_filter) {
-            if (uc->embedder_insn_filter(uc->embedder_filter_user, addr, word) != 0) {
-                return false;
-            }
-        } else if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_CODE, addr)) {
-            return false;
-        }
-    }
-    return true;
-}
-
 static void arm_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 {
     DisasContext *dc = container_of(dcbase, DisasContext, base);
@@ -11705,17 +11686,6 @@ static void arm_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         if (dc->uc->invalid_error) {
             dcbase->is_jmp = DISAS_WFI;
             return;
-        }
-
-        if (unlikely(arm_match_embedder_uidiv_core(dc, env, insn))) {
-            TCGContext *tcg_ctx = dc->uc->tcg_ctx;
-            TCGLabel *fallback = gen_new_label(tcg_ctx);
-            TCGv_i32 done = tcg_temp_new_i32(tcg_ctx);
-            gen_helper_arm_embedder_uidiv_core(tcg_ctx, done, tcg_ctx->cpu_env);
-            tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_EQ, done, 0, fallback);
-            tcg_temp_free_i32(tcg_ctx, done);
-            gen_goto_ptr(dc, false, 0);
-            gen_set_label(tcg_ctx, fallback);
         }
 
         dc->base.pc_next += 4;
@@ -11825,12 +11795,25 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 
     if ((uc->embedder_acct.enabled == 3 || uc->embedder_acct.enabled == 4) &&
         uc->embedder_insn_filter) {
-        // This opt-in classification only decides whether translated block
-        // accounting must retain its helper. It never changes Thumb hook or
-        // instruction translation behavior.
+        // The opt-in classifier selects block accounting and may require
+        // an execution guard before a Thumb instruction's first effect.
         embedder_decision = uc->embedder_insn_filter(uc->embedder_filter_user,
                                                      dc->base.pc_next - insn_size,
                                                      insn);
+        /* The table-branch request includes the old observe bit so older
+         * engines still execute the instruction through the observer. */
+        if ((embedder_decision & 128) && uc->embedder_acct.enabled == 4 &&
+            arm_dc_feature(dc, ARM_FEATURE_M) &&
+            arm_dc_feature(dc, ARM_FEATURE_V7) &&
+            (insn & 0xfff0ffe0) == 0xe8d0f000) {
+            unsigned base = (insn >> 16) & 15;
+            if ((base <= 12 || base == 15) && (insn & 15) <= 12) {
+                embedder_decision = (embedder_decision & ~4) | 64;
+            }
+        }
+        if (embedder_decision & 32) {
+            uc->embedder_tb_thread_only = true;
+        }
         if (embedder_decision & 4) {
             if (uc->embedder_guard_diagnostics &&
                 !uc->embedder_tb_slow_reason) {
@@ -11881,6 +11864,12 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     }
 
     tcg_ctx->pc_start = dc->base.pc_next - insn_size;
+    dc->embedder_guard_ram_load = uc->embedder_acct.enabled == 4 &&
+                                  (embedder_decision & 64) &&
+                                  arm_dc_feature(dc, ARM_FEATURE_M);
+    if ((embedder_decision & 64) && !dc->embedder_guard_ram_load) {
+        UC_EMBEDDER_MARK_TB_SLOW(uc, UC_EMBEDDER_TB_SLOW_OTHER);
+    }
     if (is_16bit) {
         disas_thumb_insn(dc, insn);
     } else {

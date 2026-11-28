@@ -404,6 +404,8 @@ void tb_exec_lock(struct uc_struct*);
 void tb_exec_unlock(struct uc_struct*);
 void embedder_restart_insn(CPUState *cpu, uintptr_t retaddr, bool remember,
                            bool remember_watched_store);
+/* Called before the first effect of an instruction that may need a retry. */
+void embedder_isolate_insn(CPUState *cpu, uintptr_t retaddr);
 
 /* GETPC is the true target of the return instruction that we'll execute.  */
 #ifdef CONFIG_TCG_INTERPRETER

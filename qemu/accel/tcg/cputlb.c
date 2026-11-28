@@ -25,6 +25,7 @@
 #include "exec/cputlb.h"
 #include "exec/memory-internal.h"
 #include "exec/ram_addr.h"
+#include "exec/ramlist.h"
 #include "tcg/tcg.h"
 #include "exec/helper-proto.h"
 #include "qemu/atomic.h"
@@ -622,6 +623,19 @@ void tlb_protect_code(struct uc_struct *uc, ram_addr_t ram_addr)
 {
     cpu_physical_memory_test_and_clear_dirty(ram_addr, TARGET_PAGE_SIZE,
                                              DIRTY_MEMORY_CODE);
+#if defined(TARGET_ARM) && !defined(TARGET_AARCH64)
+    if ((uc->mode & UC_MODE_MCLASS) && !uc->snapshot_level) {
+        void *host = qemu_map_ram_ptr(uc, NULL, ram_addr);
+        ram_addr_t offset;
+        RAMBlock *block = qemu_ram_block_from_host(uc, host, false, &offset);
+
+        if (block && (!(block->flags & RAM_PREALLOC) || uc->embedder_code_store)) {
+            // Data may already have a writable TLB entry through another
+            // processor view. Protect by backing pointer before code runs.
+            tlb_reset_dirty(uc->cpu, (uintptr_t)host, TARGET_PAGE_SIZE);
+        }
+    }
+#endif
 }
 
 /* update the TLB so that writes in physical page 'phys_addr' are no longer
@@ -998,6 +1012,38 @@ static int embedder_page_hook_flags(struct uc_struct *uc, hwaddr page)
  * Called from TCG-generated code, which is under an RCU read-side
  * critical section.
  */
+#if defined(TARGET_ARM) && !defined(TARGET_AARCH64)
+static bool mprofile_tracks_ram_code(struct uc_struct *uc, const RAMBlock *ram)
+{
+    if (!(uc->mode & UC_MODE_MCLASS) || uc->snapshot_level) {
+        return false;
+    }
+    if (!(ram->flags & RAM_PREALLOC)) {
+        return true;
+    }
+    if (!uc->embedder_code_store) {
+        return false;
+    }
+
+    // The fetch lookup identifies code by its host pointer. Distinct RAMBlock
+    // offsets for aliases are not interchangeable, so keep the old store
+    // path when another mapping addresses any of this backing.
+    uintptr_t start = (uintptr_t)ram->host;
+    RAMBlock *other;
+    RAMBLOCK_FOREACH(other) {
+        if (other == ram || !other->host) {
+            continue;
+        }
+        uintptr_t other_start = (uintptr_t)other->host;
+        if (other_start < start ? start - other_start < other->max_length
+                               : other_start - start < ram->max_length) {
+            return false;
+        }
+    }
+    return true;
+}
+#endif
+
 void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
                              hwaddr paddr, MemTxAttrs attrs, int prot,
                              int mmu_idx, target_ulong size)
@@ -1084,6 +1130,12 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
         if (prot & PAGE_WRITE) {
             if (section->readonly) {
                 write_address |= TLB_DISCARD_WRITE;
+#if defined(TARGET_ARM) && !defined(TARGET_AARCH64)
+            } else if (mprofile_tracks_ram_code(cpu->uc, section->mr->ram_block)) {
+                if (tb_ram_page_has_code(cpu->uc, iotlb)) {
+                    write_address |= TLB_NOTDIRTY;
+                }
+#endif
             } else if (cpu_physical_memory_is_clean(iotlb)) {
                 /* embedder: an embedder that declares code watches watches
                    every page it sees translated, in every engine and alias, so
@@ -1485,12 +1537,13 @@ static void notdirty_write(CPUState *cpu, vaddr mem_vaddr, unsigned size,
     struct uc_struct *uc = cpu->uc;
 #endif
     ram_addr_t ram_addr = mem_vaddr + iotlbentry->addr;
-    MemoryRegion *mr = cpu->uc->memory_mapping(cpu->uc, tlbe->paddr | (mem_vaddr & ~TARGET_PAGE_MASK));
+    hwaddr paddr = tlbe->paddr | (mem_vaddr & ~TARGET_PAGE_MASK);
+    MemoryRegion *mr = cpu->uc->memory_mapping(cpu->uc, paddr);
 
     if (mr && (mr->perms & UC_PROT_EXEC) != 0) {
         struct page_collection *pages
             = page_collection_lock(cpu->uc, ram_addr, ram_addr + size);
-        tb_invalidate_phys_page_fast(cpu->uc, pages, ram_addr, size, retaddr);
+        tb_invalidate_phys_page_fast(cpu->uc, pages, ram_addr, paddr, size, retaddr);
         page_collection_unlock(pages);
     }
 
