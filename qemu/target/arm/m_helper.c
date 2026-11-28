@@ -22,7 +22,7 @@
 #include "arm_ldst.h"
 #include "exec/cpu_ldst.h"
 
-/* A multiple load can be restarted only before its first transfer. A
+/* A guarded load can be restarted only before its first transfer. A
  * direct TLB read excludes MMIO, watchpoints and mappings with read hooks
  * when page hooks are active. The exact path handles all other spans. */
 void HELPER(embedder_guard_ram_load)(CPUARMState *env, uint32_t addr,
@@ -30,8 +30,9 @@ void HELPER(embedder_guard_ram_load)(CPUARMState *env, uint32_t addr,
 {
     struct uc_struct *uc = env_cpu(env)->uc;
     uint32_t last = addr + (bytes - 1);
+    uint32_t alignment_mask = bytes < 4 ? bytes - 1 : 3;
 
-    if (likely(uc->embedder_page_hooks && !(addr & 3) && last >= addr &&
+    if (likely(uc->embedder_page_hooks && !(addr & alignment_mask) && last >= addr &&
                tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx) &&
                (((addr ^ last) & TARGET_PAGE_MASK) == 0 ||
                 tlb_vaddr_to_host(env, last, MMU_DATA_LOAD, mmu_idx)))) {

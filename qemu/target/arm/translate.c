@@ -9327,7 +9327,7 @@ static bool op_store_ri(DisasContext *s, arg_ldst_ri *a,
 }
 
 static void guard_thumb_ram_load(DisasContext *s, TCGv_i32 addr,
-                                 int words, int mem_idx)
+                                 int bytes, int mem_idx)
 {
     if (!s->thumb || !s->embedder_guard_ram_load) {
         return;
@@ -9339,7 +9339,7 @@ static void guard_thumb_ram_load(DisasContext *s, TCGv_i32 addr,
         return;
     }
     TCGContext *tcg_ctx = s->uc->tcg_ctx;
-    TCGv_i32 length = tcg_const_i32(tcg_ctx, words * 4);
+    TCGv_i32 length = tcg_const_i32(tcg_ctx, bytes);
     TCGv_i32 mmu = tcg_const_i32(tcg_ctx, mem_idx);
     gen_helper_embedder_guard_ram_load(tcg_ctx, tcg_ctx->cpu_env, addr, length, mmu);
     tcg_temp_free_i32(tcg_ctx, mmu);
@@ -9353,7 +9353,7 @@ static bool op_ldrd_ri(DisasContext *s, arg_ldst_ri *a, int rt2)
     TCGv_i32 addr, tmp;
 
     addr = op_addr_ri_pre(s, a);
-    guard_thumb_ram_load(s, addr, 2, mem_idx);
+    guard_thumb_ram_load(s, addr, 8, mem_idx);
 
     tmp = tcg_temp_new_i32(tcg_ctx);
     gen_aa32_ld_i32(s, tmp, addr, mem_idx, MO_UL | s->be_data);
@@ -10627,7 +10627,7 @@ static bool do_ldm(DisasContext *s, arg_ldst_block *a, int min_n)
 
     addr = op_addr_block_pre(s, a, n);
     mem_idx = get_mem_index(s);
-    guard_thumb_ram_load(s, addr, n, mem_idx);
+    guard_thumb_ram_load(s, addr, n * 4, mem_idx);
     loaded_base = false;
     loaded_var = NULL;
 
@@ -10806,6 +10806,7 @@ static bool op_tbranch(DisasContext *s, arg_tbranch *a, bool half)
 {
     TCGContext *tcg_ctx = s->uc->tcg_ctx;
     TCGv_i32 addr, tmp;
+    int mem_idx = get_mem_index(s);
 
     tmp = load_reg(s, a->rm);
     if (half) {
@@ -10814,7 +10815,8 @@ static bool op_tbranch(DisasContext *s, arg_tbranch *a, bool half)
     addr = load_reg(s, a->rn);
     tcg_gen_add_i32(tcg_ctx, addr, addr, tmp);
 
-    gen_aa32_ld_i32(s, tmp, addr, get_mem_index(s),
+    guard_thumb_ram_load(s, addr, half ? 2 : 1, mem_idx);
+    gen_aa32_ld_i32(s, tmp, addr, mem_idx,
                     half ? MO_UW | s->be_data : MO_UB);
     tcg_temp_free_i32(tcg_ctx, addr);
 
@@ -11798,6 +11800,17 @@ static void thumb_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         embedder_decision = uc->embedder_insn_filter(uc->embedder_filter_user,
                                                      dc->base.pc_next - insn_size,
                                                      insn);
+        /* The table-branch request includes the old observe bit so older
+         * engines still execute the instruction through the observer. */
+        if ((embedder_decision & 128) && uc->embedder_acct.enabled == 4 &&
+            arm_dc_feature(dc, ARM_FEATURE_M) &&
+            arm_dc_feature(dc, ARM_FEATURE_V7) &&
+            (insn & 0xfff0ffe0) == 0xe8d0f000) {
+            unsigned base = (insn >> 16) & 15;
+            if ((base <= 12 || base == 15) && (insn & 15) <= 12) {
+                embedder_decision = (embedder_decision & ~4) | 64;
+            }
+        }
         if (embedder_decision & 32) {
             uc->embedder_tb_thread_only = true;
         }
